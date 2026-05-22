@@ -1,70 +1,61 @@
+using System;
 using UnityEngine;
-using UnityEngine.UI;
 
-[RequireComponent(typeof(Button))]
-public class DemoSourceButton : MonoBehaviour
+public class DemoPageSwitcher : MonoBehaviour
 {
-    [SerializeField] private Image targetImage;
-
-    [SerializeField] private Color normalColor = Color.white;
-    [SerializeField] private Color selectedColor = new Color(0.3f, 0.7f, 1.0f, 1.0f);
-    [SerializeField] private Color disabledColor = new Color(0.35f, 0.35f, 0.35f, 1.0f);
-
-    private Button button;
-
-    public Button Button
+    [Serializable]
+    private class PageBinding
     {
-        get
+        public DemoPageId pageId;
+        public GameObject pageObject;
+        public DemoScreenOpenMode screenOpenMode = DemoScreenOpenMode.FullOpen;
+    }
+
+    [SerializeField] private PageBinding[] pages;
+    [SerializeField] private DemoScreenViewport screenViewport;
+    [SerializeField] private DemoPageId firstPage = DemoPageId.NormalDrive;
+
+    public event Action<DemoPageId> PageChanged;
+
+    public DemoPageId CurrentPage { get; private set; }
+
+    private void Start()
+    {
+        ShowPage(firstPage);
+    }
+
+    public void ShowPage(DemoPageId targetPage)
+    {
+        PageBinding targetBinding = null;
+
+        for (int i = 0; i < pages.Length; i++)
         {
-            if (button == null)
+            PageBinding binding = pages[i];
+
+            if (binding == null)
             {
-                button = GetComponent<Button>();
+                continue;
             }
 
-            return button;
+            bool shouldShow = binding.pageId == targetPage;
+
+            if (binding.pageObject != null)
+            {
+                binding.pageObject.SetActive(shouldShow);
+            }
+
+            if (shouldShow)
+            {
+                targetBinding = binding;
+            }
         }
-    }
 
-    private void Awake()
-    {
-        button = GetComponent<Button>();
-
-        if (targetImage == null)
+        if (screenViewport != null && targetBinding != null)
         {
-            targetImage = GetComponent<Image>();
+            screenViewport.SetMode(targetBinding.screenOpenMode);
         }
 
-        // Button 默认的 Color Tint 会覆盖手动颜色，所以这里关闭。
-        button.transition = Selectable.Transition.None;
-    }
-
-    public void SetVisible(bool isVisible)
-    {
-        gameObject.SetActive(isVisible);
-    }
-
-    public void SetState(DemoSourceButtonVisualState visualState, bool canClick)
-    {
-        Button.interactable = canClick;
-
-        if (targetImage == null)
-        {
-            return;
-        }
-
-        switch (visualState)
-        {
-            case DemoSourceButtonVisualState.Selected:
-                targetImage.color = selectedColor;
-                break;
-
-            case DemoSourceButtonVisualState.Disabled:
-                targetImage.color = disabledColor;
-                break;
-
-            default:
-                targetImage.color = normalColor;
-                break;
-        }
+        CurrentPage = targetPage;
+        PageChanged?.Invoke(targetPage);
     }
 }
