@@ -1,49 +1,61 @@
-using System;
 using UnityEngine;
+using UnityEngine.UI;
 
-public class DemoPageSwitcher : MonoBehaviour
+[RequireComponent(typeof(Button))]
+public class DemoSourceButton : MonoBehaviour
 {
-    [Serializable]
-    private class PageBinding
+    [SerializeField] private Image targetImage;
+
+    [SerializeField] private Color normalColor = Color.white;
+    [SerializeField] private Color selectedColor = new Color(0.3f, 0.7f, 1.0f, 1.0f);
+    [SerializeField] private Color disabledColor = new Color(0.35f, 0.35f, 0.35f, 1.0f);
+
+    private Button button;
+
+    public Button Button
     {
-        public DemoPageId pageId;
-        public GameObject pageObject;
-    }
-
-    [SerializeField] private PageBinding[] pages;
-
-    public DemoPageId CurrentPage { get; private set; }
-
-    public void ShowPage(DemoPageId targetPage)
-    {
-        for (int i = 0; i < pages.Length; i++)
+        get
         {
-            PageBinding binding = pages[i];
-
-            if (binding == null || binding.pageObject == null)
+            if (button == null)
             {
-                continue;
+                button = GetComponent<Button>();
             }
 
-            bool shouldShow = binding.pageId == targetPage;
-            binding.pageObject.SetActive(shouldShow);
+            return button;
         }
-
-        CurrentPage = targetPage;
     }
 
-    public void HideAllPages()
+    private void Awake()
     {
-        for (int i = 0; i < pages.Length; i++)
+        button = GetComponent<Button>();
+        button.transition = Selectable.Transition.None;
+
+        if (targetImage == null)
         {
-            PageBinding binding = pages[i];
-
-            if (binding == null || binding.pageObject == null)
-            {
-                continue;
-            }
-
-            binding.pageObject.SetActive(false);
+            targetImage = GetComponent<Image>();
         }
+    }
+
+    public void SetVisible(bool isVisible)
+    {
+        gameObject.SetActive(isVisible);
+    }
+
+    public void SetState(bool isSelected, bool isClickable)
+    {
+        Button.interactable = isClickable;
+
+        if (targetImage == null)
+        {
+            return;
+        }
+
+        if (isSelected)
+        {
+            targetImage.color = selectedColor;
+            return;
+        }
+
+        targetImage.color = isClickable ? normalColor : disabledColor;
     }
 }
