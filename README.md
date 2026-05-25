@@ -34,7 +34,7 @@ public class DemoSourceButton : MonoBehaviour
     {
         button = GetComponent<Button>();
 
-        // Button 自带的色变化会干扰我们自己的状态显示。
+        // Button 自带颜色变化会影响覆盖层显示。
         button.transition = Selectable.Transition.None;
 
         if (stateOverlay != null)
@@ -48,12 +48,26 @@ public class DemoSourceButton : MonoBehaviour
         gameObject.SetActive(isVisible);
     }
 
+    // 新接口：直接用 bool 控制。
     public void SetState(bool isSelected, bool isClickable)
     {
         Button.interactable = isClickable;
 
         ApplyOverlay(isSelected, isClickable);
         ApplyLabelColor(isSelected, isClickable);
+    }
+
+    // 旧接口兼容：给 DemoSourcePanel.cs 继续用。
+    public void SetState(DemoSourceButtonVisualState visualState, bool isClickable)
+    {
+        bool isSelected = visualState == DemoSourceButtonVisualState.Selected;
+
+        if (visualState == DemoSourceButtonVisualState.Disabled)
+        {
+            isClickable = false;
+        }
+
+        SetState(isSelected, isClickable);
     }
 
     private void ApplyOverlay(bool isSelected, bool isClickable)
