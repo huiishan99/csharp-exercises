@@ -1,223 +1,99 @@
 using UnityEngine;
+using UnityEngine.UI;
 
-public class DemoSourcePanel : MonoBehaviour
+[RequireComponent(typeof(Button))]
+public class DemoSourceButton : MonoBehaviour
 {
-    [SerializeField] private DemoPageSwitcher pageSwitcher;
+    [SerializeField] private Image stateOverlay;
+    [SerializeField] private Graphic labelGraphic;
 
-    [SerializeField] private DemoSourceButton musicButton;
-    [SerializeField] private DemoSourceButton workButton;
-    [SerializeField] private DemoSourceButton movieButton;
-    [SerializeField] private DemoSourceButton gameButton;
-    [SerializeField] private DemoSourceButton settingButton;
+    [SerializeField] private Color normalOverlayColor = new Color(0f, 0f, 0f, 0f);
+    [SerializeField] private Color selectedOverlayColor = new Color(0.1f, 0.55f, 1f, 0.45f);
+    [SerializeField] private Color disabledOverlayColor = new Color(0f, 0f, 0f, 0.6f);
 
-    private void OnEnable()
+    [SerializeField] private Color normalLabelColor = Color.white;
+    [SerializeField] private Color selectedLabelColor = Color.white;
+    [SerializeField] private Color disabledLabelColor = new Color(0.55f, 0.55f, 0.55f, 1f);
+
+    private Button button;
+
+    public Button Button
     {
-        if (pageSwitcher != null)
+        get
         {
-            pageSwitcher.PageChanged += RefreshByPage;
+            if (button == null)
+            {
+                button = GetComponent<Button>();
+            }
+
+            return button;
         }
     }
 
-    private void Start()
+    private void Awake()
     {
-        RegisterButtonEvents();
+        button = GetComponent<Button>();
 
-        if (pageSwitcher != null)
+        // Button 自带的色变化会干扰我们自己的状态显示。
+        button.transition = Selectable.Transition.None;
+
+        if (stateOverlay != null)
         {
-            RefreshByPage(pageSwitcher.CurrentPage);
+            stateOverlay.raycastTarget = false;
         }
     }
 
-    private void OnDisable()
+    public void SetVisible(bool isVisible)
     {
-        if (pageSwitcher != null)
-        {
-            pageSwitcher.PageChanged -= RefreshByPage;
-        }
+        gameObject.SetActive(isVisible);
     }
 
-    private void RegisterButtonEvents()
+    public void SetState(bool isSelected, bool isClickable)
     {
-        if (workButton != null)
-        {
-            workButton.Button.onClick.RemoveListener(OnWorkClicked);
-            workButton.Button.onClick.AddListener(OnWorkClicked);
-        }
+        Button.interactable = isClickable;
 
-        if (movieButton != null)
-        {
-            movieButton.Button.onClick.RemoveListener(OnMovieClicked);
-            movieButton.Button.onClick.AddListener(OnMovieClicked);
-        }
-
-        if (gameButton != null)
-        {
-            gameButton.Button.onClick.RemoveListener(OnGameClicked);
-            gameButton.Button.onClick.AddListener(OnGameClicked);
-        }
-
-        if (settingButton != null)
-        {
-            settingButton.Button.onClick.RemoveListener(OnSettingClicked);
-            settingButton.Button.onClick.AddListener(OnSettingClicked);
-        }
-
-        // Music 是显示用，不注册点击事件。
+        ApplyOverlay(isSelected, isClickable);
+        ApplyLabelColor(isSelected, isClickable);
     }
 
-    private void OnWorkClicked()
+    private void ApplyOverlay(bool isSelected, bool isClickable)
     {
-        TryShowFullPage(DemoPageId.Work);
-    }
-
-    private void OnMovieClicked()
-    {
-        TryShowFullPage(DemoPageId.Movie);
-    }
-
-    private void OnGameClicked()
-    {
-        TryShowFullPage(DemoPageId.Game);
-    }
-
-    private void OnSettingClicked()
-    {
-        TryShowFullPage(DemoPageId.LightingColorChange);
-    }
-
-    private void TryShowFullPage(DemoPageId targetPage)
-    {
-        if (pageSwitcher == null)
+        if (stateOverlay == null)
         {
             return;
         }
 
-        if (!IsFullModePage(pageSwitcher.CurrentPage))
+        if (isSelected)
+        {
+            stateOverlay.enabled = true;
+            stateOverlay.color = selectedOverlayColor;
+            return;
+        }
+
+        if (!isClickable)
+        {
+            stateOverlay.enabled = true;
+            stateOverlay.color = disabledOverlayColor;
+            return;
+        }
+
+        stateOverlay.enabled = false;
+        stateOverlay.color = normalOverlayColor;
+    }
+
+    private void ApplyLabelColor(bool isSelected, bool isClickable)
+    {
+        if (labelGraphic == null)
         {
             return;
         }
 
-        pageSwitcher.ShowPage(targetPage);
-    }
-
-    private void RefreshByPage(DemoPageId currentPage)
-    {
-        if (currentPage == DemoPageId.Welcome)
+        if (isSelected)
         {
-            ApplyWelcomeMode();
+            labelGraphic.color = selectedLabelColor;
             return;
         }
 
-        if (IsSemiModePage(currentPage))
-        {
-            ApplySemiMode();
-            return;
-        }
-
-        ApplyFullMode(currentPage);
-    }
-
-    private bool IsSemiModePage(DemoPageId pageId)
-    {
-        return pageId == DemoPageId.NormalDrive
-            || pageId == DemoPageId.RearView;
-    }
-
-    private bool IsFullModePage(DemoPageId pageId)
-    {
-        return pageId == DemoPageId.Work
-            || pageId == DemoPageId.Movie
-            || pageId == DemoPageId.Game
-            || pageId == DemoPageId.LightingColorChange;
-    }
-
-    private void ApplyWelcomeMode()
-    {
-        SetButtonVisible(musicButton, false);
-        SetButtonVisible(workButton, false);
-        SetButtonVisible(movieButton, false);
-        SetButtonVisible(gameButton, false);
-        SetButtonVisible(settingButton, false);
-    }
-
-    private void ApplySemiMode()
-    {
-        SetButtonVisible(musicButton, true);
-        SetButtonVisible(workButton, true);
-        SetButtonVisible(movieButton, true);
-        SetButtonVisible(gameButton, true);
-        SetButtonVisible(settingButton, false);
-
-        SetButtonState(musicButton, DemoSourceButtonVisualState.Selected, false);
-        SetButtonState(workButton, DemoSourceButtonVisualState.Disabled, false);
-        SetButtonState(movieButton, DemoSourceButtonVisualState.Disabled, false);
-        SetButtonState(gameButton, DemoSourceButtonVisualState.Disabled, false);
-    }
-
-    private void ApplyFullMode(DemoPageId currentPage)
-    {
-        SetButtonVisible(musicButton, true);
-        SetButtonVisible(workButton, true);
-        SetButtonVisible(movieButton, true);
-        SetButtonVisible(gameButton, true);
-        SetButtonVisible(settingButton, true);
-
-        SetButtonState(musicButton, DemoSourceButtonVisualState.Disabled, false);
-
-        SetButtonState(
-            workButton,
-            currentPage == DemoPageId.Work
-                ? DemoSourceButtonVisualState.Selected
-                : DemoSourceButtonVisualState.Normal,
-            true
-        );
-
-        SetButtonState(
-            movieButton,
-            currentPage == DemoPageId.Movie
-                ? DemoSourceButtonVisualState.Selected
-                : DemoSourceButtonVisualState.Normal,
-            true
-        );
-
-        SetButtonState(
-            gameButton,
-            currentPage == DemoPageId.Game
-                ? DemoSourceButtonVisualState.Selected
-                : DemoSourceButtonVisualState.Normal,
-            true
-        );
-
-        SetButtonState(
-            settingButton,
-            currentPage == DemoPageId.LightingColorChange
-                ? DemoSourceButtonVisualState.Selected
-                : DemoSourceButtonVisualState.Normal,
-            true
-        );
-    }
-
-    private void SetButtonVisible(DemoSourceButton sourceButton, bool isVisible)
-    {
-        if (sourceButton == null)
-        {
-            return;
-        }
-
-        sourceButton.SetVisible(isVisible);
-    }
-
-    private void SetButtonState(
-        DemoSourceButton sourceButton,
-        DemoSourceButtonVisualState visualState,
-        bool canClick
-    )
-    {
-        if (sourceButton == null)
-        {
-            return;
-        }
-
-        sourceButton.SetState(visualState, canClick);
+        labelGraphic.color = isClickable ? normalLabelColor : disabledLabelColor;
     }
 }
