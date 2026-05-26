@@ -1,61 +1,168 @@
+using System;
 using UnityEngine;
-using UnityEngine.UI;
 
-[RequireComponent(typeof(Button))]
-public class DemoSourceButton : MonoBehaviour
+public class DemoSourcePanel : MonoBehaviour
 {
-    [SerializeField] private Image targetImage;
-
-    [SerializeField] private Color normalColor = Color.white;
-    [SerializeField] private Color selectedColor = new Color(0.3f, 0.7f, 1.0f, 1.0f);
-    [SerializeField] private Color disabledColor = new Color(0.35f, 0.35f, 0.35f, 1.0f);
-
-    private Button button;
-
-    public Button Button
+    [Serializable]
+    private class SourceBinding
     {
-        get
+        public DemoSourceId sourceId;
+        public DemoPageId targetPage;
+        public DemoSourceButton sourceButton;
+    }
+
+    [SerializeField] private DemoPageSwitcher pageSwitcher;
+    [SerializeField] private SourceBinding[] sources;
+    [SerializeField] private DemoSourceId firstFullSource = DemoSourceId.Setting;
+
+    private DemoVehicleMode currentVehicleMode = DemoVehicleMode.Parking;
+    private DemoSourceId selectedFullSource;
+
+    private void Start()
+    {
+        selectedFullSource = firstFullSource;
+        RegisterButtonEvents();
+        RefreshButtons();
+    }
+
+    private void RegisterButtonEvents()
+    {
+        for (int i = 0; i < sources.Length; i++)
         {
-            if (button == null)
+            SourceBinding binding = sources[i];
+
+            if (binding == null || binding.sourceButton == null)
             {
-                button = GetComponent<Button>();
+                continue;
             }
 
-            return button;
+            SourceBinding capturedBinding = binding;
+            binding.sourceButton.Button.onClick.AddListener(() => OnSourceClicked(capturedBinding));
         }
     }
 
-    private void Awake()
+    public void ApplyVehicleMode(DemoVehicleMode vehicleMode)
     {
-        button = GetComponent<Button>();
-        button.transition = Selectable.Transition.None;
-
-        if (targetImage == null)
-        {
-            targetImage = GetComponent<Image>();
-        }
+        currentVehicleMode = vehicleMode;
+        RefreshButtons();
     }
 
-    public void SetVisible(bool isVisible)
+    public void SetFullSource(DemoSourceId sourceId, bool showTargetPage)
     {
-        gameObject.SetActive(isVisible);
-    }
-
-    public void SetState(bool isSelected, bool isClickable)
-    {
-        Button.interactable = isClickable;
-
-        if (targetImage == null)
+        if (sourceId == DemoSourceId.Music)
         {
             return;
         }
 
-        if (isSelected)
+        selectedFullSource = sourceId;
+
+        if (showTargetPage && pageSwitcher != null)
         {
-            targetImage.color = selectedColor;
+            DemoPageId targetPage = GetTargetPage(sourceId);
+            pageSwitcher.ShowPage(targetPage);
+        }
+
+        RefreshButtons();
+    }
+
+    private void OnSourceClicked(SourceBinding binding)
+    {
+        if (binding == null)
+        {
             return;
         }
 
-        targetImage.color = isClickable ? normalColor : disabledColor;
+        if (currentVehicleMode != DemoVehicleMode.Parking)
+        {
+            return;
+        }
+
+        if (binding.sourceId == DemoSourceId.Music)
+        {
+            return;
+        }
+
+        if (binding.sourceId == selectedFullSource)
+        {
+            return;
+        }
+
+        selectedFullSource = binding.sourceId;
+
+        if (pageSwitcher != null)
+        {
+            pageSwitcher.ShowPage(binding.targetPage);
+        }
+
+        RefreshButtons();
+    }
+
+    private DemoPageId GetTargetPage(DemoSourceId sourceId)
+    {
+        for (int i = 0; i < sources.Length; i++)
+        {
+            SourceBinding binding = sources[i];
+
+            if (binding == null)
+            {
+                continue;
+            }
+
+            if (binding.sourceId == sourceId)
+            {
+                return binding.targetPage;
+            }
+        }
+
+        return DemoPageId.LightingColorChange;
+    }
+
+    private void RefreshButtons()
+    {
+        bool isParking = currentVehicleMode == DemoVehicleMode.Parking;
+
+        for (int i = 0; i < sources.Length; i++)
+        {
+            SourceBinding binding = sources[i];
+
+            if (binding == null || binding.sourceButton == null)
+            {
+                continue;
+            }
+
+            if (isParking)
+            {
+                ApplyParkingState(binding);
+            }
+            else
+            {
+                ApplySemiState(binding);
+            }
+        }
+    }
+
+    private void ApplyParkingState(SourceBinding binding)
+    {
+        bool isMusic = binding.sourceId == DemoSourceId.Music;
+        bool isSelected = binding.sourceId == selectedFullSource && !isMusic;
+        bool isClickable = !isMusic && !isSelected;
+
+        binding.sourceButton.SetVisible(true);
+        binding.sourceButton.SetState(isSelected, isClickable);
+    }
+
+    private void ApplySemiState(SourceBinding binding)
+    {
+        bool isMusic = binding.sourceId == DemoSourceId.Music;
+        bool isSetting = binding.sourceId == DemoSourceId.Setting;
+
+        if (isSetting)
+        {
+            binding.sourceButton.SetVisible(false);
+            return;
+        }
+
+        binding.sourceButton.SetVisible(true);
+        binding.sourceButton.SetState(isMusic, false);
     }
 }
