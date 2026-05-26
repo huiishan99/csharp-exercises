@@ -1,47 +1,117 @@
-using System;
 using UnityEngine;
 
-public class DemoPageSwitcher : MonoBehaviour
+#if ENABLE_INPUT_SYSTEM
+using UnityEngine.InputSystem;
+#endif
+
+public class KinemaMockKeyboardInput : MonoBehaviour
 {
-    [Serializable]
-    private class PageBinding
+    [SerializeField] private KinemaMockDisplayController controller;
+
+    private void Update()
     {
-        public DemoPageId pageId;
-        public GameObject pageObject;
-    }
-
-    [SerializeField] private PageBinding[] pages;
-    [SerializeField] private DemoPageId firstPage = DemoPageId.Work;
-    [SerializeField] private bool showFirstPageOnStart = false;
-
-    public event Action<DemoPageId> PageChanged;
-
-    public DemoPageId CurrentPage { get; private set; }
-
-    private void Start()
-    {
-        if (showFirstPageOnStart)
+        if (controller == null)
         {
-            ShowPage(firstPage);
+            return;
+        }
+
+        if (IsIgnTogglePressed())
+        {
+            controller.ToggleIgn();
+            return;
+        }
+
+        if (IsParkingPressed())
+        {
+            controller.ShiftP();
+            return;
+        }
+
+        if (IsDrivePressed())
+        {
+            controller.ShiftD();
+            return;
+        }
+
+        if (IsRearPressed())
+        {
+            controller.ShiftR();
         }
     }
 
-    public void ShowPage(DemoPageId targetPage)
+    private bool IsIgnTogglePressed()
     {
-        for (int i = 0; i < pages.Length; i++)
+#if ENABLE_INPUT_SYSTEM
+        Keyboard keyboard = Keyboard.current;
+
+        if (keyboard == null)
         {
-            PageBinding binding = pages[i];
-
-            if (binding == null || binding.pageObject == null)
-            {
-                continue;
-            }
-
-            bool shouldShow = binding.pageId == targetPage;
-            binding.pageObject.SetActive(shouldShow);
+            return false;
         }
 
-        CurrentPage = targetPage;
-        PageChanged?.Invoke(targetPage);
+        return keyboard.digit0Key.wasPressedThisFrame
+            || keyboard.numpad0Key.wasPressedThisFrame
+            || keyboard.iKey.wasPressedThisFrame;
+#elif ENABLE_LEGACY_INPUT_MANAGER
+        return Input.GetKeyDown(KeyCode.Alpha0)
+            || Input.GetKeyDown(KeyCode.Keypad0)
+            || Input.GetKeyDown(KeyCode.I);
+#else
+        return false;
+#endif
+    }
+
+    private bool IsParkingPressed()
+    {
+#if ENABLE_INPUT_SYSTEM
+        Keyboard keyboard = Keyboard.current;
+
+        if (keyboard == null)
+        {
+            return false;
+        }
+
+        return keyboard.pKey.wasPressedThisFrame;
+#elif ENABLE_LEGACY_INPUT_MANAGER
+        return Input.GetKeyDown(KeyCode.P);
+#else
+        return false;
+#endif
+    }
+
+    private bool IsDrivePressed()
+    {
+#if ENABLE_INPUT_SYSTEM
+        Keyboard keyboard = Keyboard.current;
+
+        if (keyboard == null)
+        {
+            return false;
+        }
+
+        return keyboard.dKey.wasPressedThisFrame;
+#elif ENABLE_LEGACY_INPUT_MANAGER
+        return Input.GetKeyDown(KeyCode.D);
+#else
+        return false;
+#endif
+    }
+
+    private bool IsRearPressed()
+    {
+#if ENABLE_INPUT_SYSTEM
+        Keyboard keyboard = Keyboard.current;
+
+        if (keyboard == null)
+        {
+            return false;
+        }
+
+        return keyboard.rKey.wasPressedThisFrame;
+#elif ENABLE_LEGACY_INPUT_MANAGER
+        return Input.GetKeyDown(KeyCode.R);
+#else
+        return false;
+#endif
     }
 }
