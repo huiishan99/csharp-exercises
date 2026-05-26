@@ -1,44 +1,47 @@
+using System;
 using UnityEngine;
 
-public class KinemaMockKeyboardInput : MonoBehaviour
+public class DemoPageSwitcher : MonoBehaviour
 {
-    [SerializeField] private KinemaMockDisplayController controller;
-
-    [Header("Keys")]
-    [SerializeField] private KeyCode ignToggleKey = KeyCode.Alpha0;
-    [SerializeField] private KeyCode ignToggleSubKey = KeyCode.I;
-    [SerializeField] private KeyCode parkingKey = KeyCode.P;
-    [SerializeField] private KeyCode driveKey = KeyCode.D;
-    [SerializeField] private KeyCode rearKey = KeyCode.R;
-
-    private void Update()
+    [Serializable]
+    private class PageBinding
     {
-        if (controller == null)
+        public DemoPageId pageId;
+        public GameObject pageObject;
+    }
+
+    [SerializeField] private PageBinding[] pages;
+    [SerializeField] private DemoPageId firstPage = DemoPageId.Work;
+    [SerializeField] private bool showFirstPageOnStart = false;
+
+    public event Action<DemoPageId> PageChanged;
+
+    public DemoPageId CurrentPage { get; private set; }
+
+    private void Start()
+    {
+        if (showFirstPageOnStart)
         {
-            return;
+            ShowPage(firstPage);
+        }
+    }
+
+    public void ShowPage(DemoPageId targetPage)
+    {
+        for (int i = 0; i < pages.Length; i++)
+        {
+            PageBinding binding = pages[i];
+
+            if (binding == null || binding.pageObject == null)
+            {
+                continue;
+            }
+
+            bool shouldShow = binding.pageId == targetPage;
+            binding.pageObject.SetActive(shouldShow);
         }
 
-        if (Input.GetKeyDown(ignToggleKey) || Input.GetKeyDown(ignToggleSubKey))
-        {
-            controller.ToggleIgn();
-            return;
-        }
-
-        if (Input.GetKeyDown(parkingKey))
-        {
-            controller.ShiftP();
-            return;
-        }
-
-        if (Input.GetKeyDown(driveKey))
-        {
-            controller.ShiftD();
-            return;
-        }
-
-        if (Input.GetKeyDown(rearKey))
-        {
-            controller.ShiftR();
-        }
+        CurrentPage = targetPage;
+        PageChanged?.Invoke(targetPage);
     }
 }
