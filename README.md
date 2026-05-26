@@ -1,168 +1,266 @@
-using System;
+using System.Collections;
 using UnityEngine;
 
-public class DemoSourcePanel : MonoBehaviour
+public enum KinemaMockDisplayMode
 {
-    [Serializable]
-    private class SourceBinding
-    {
-        public DemoSourceId sourceId;
-        public DemoPageId targetPage;
-        public DemoSourceButton sourceButton;
-    }
+    Close,
+    Opening,
+    Full,
+    Half,
+    RearView
+}
 
+public class KinemaMockDisplayController : MonoBehaviour
+{
+    [Header("Root")]
+    [SerializeField] private GameObject screenViewportRoot;
+    [SerializeField] private GameObject sourcePanelObject;
+    [SerializeField] private GameObject hvacPopupObject;
+
+    [Header("Managers")]
+    [SerializeField] private DemoScreenViewport screenViewport;
     [SerializeField] private DemoPageSwitcher pageSwitcher;
-    [SerializeField] private SourceBinding[] sources;
-    [SerializeField] private DemoSourceId firstFullSource = DemoSourceId.Setting;
+    [SerializeField] private DemoSourcePanel sourcePanel;
 
-    private DemoVehicleMode currentVehicleMode = DemoVehicleMode.Parking;
-    private DemoSourceId selectedFullSource;
+    [Header("Page")]
+    [SerializeField] private DemoPageId openingPage = DemoPageId.Welcome;
+    [SerializeField] private DemoPageId drivePage = DemoPageId.NormalDrive;
+    [SerializeField] private DemoPageId rearPage = DemoPageId.RearView;
+
+    [Header("Parking")]
+    [SerializeField] private DemoSourceId parkingDefaultSource = DemoSourceId.Setting;
+
+    [Header("Opening")]
+    [SerializeField] private float openingDuration = 3.5f;
+
+    public KinemaMockDisplayMode CurrentDisplayMode { get; private set; }
+    public bool IsIgnOn { get; private set; }
+
+    private Coroutine openingCoroutine;
 
     private void Start()
     {
-        selectedFullSource = firstFullSource;
-        RegisterButtonEvents();
-        RefreshButtons();
+        ApplyCloseMode();
     }
 
-    private void RegisterButtonEvents()
+    public void ToggleIgn()
     {
-        for (int i = 0; i < sources.Length; i++)
+        if (IsIgnOn)
         {
-            SourceBinding binding = sources[i];
-
-            if (binding == null || binding.sourceButton == null)
-            {
-                continue;
-            }
-
-            SourceBinding capturedBinding = binding;
-            binding.sourceButton.Button.onClick.AddListener(() => OnSourceClicked(capturedBinding));
+            IgnOff();
+            return;
         }
+
+        IgnOn();
     }
 
-    public void ApplyVehicleMode(DemoVehicleMode vehicleMode)
+    public void IgnOn()
     {
-        currentVehicleMode = vehicleMode;
-        RefreshButtons();
+        if (IsIgnOn)
+        {
+            return;
+        }
+
+        IsIgnOn = true;
+        EnterOpeningMode();
     }
 
-    public void SetFullSource(DemoSourceId sourceId, bool showTargetPage)
+    public void IgnOff()
     {
-        if (sourceId == DemoSourceId.Music)
+        if (!IsIgnOn)
         {
             return;
         }
 
-        selectedFullSource = sourceId;
-
-        if (showTargetPage && pageSwitcher != null)
-        {
-            DemoPageId targetPage = GetTargetPage(sourceId);
-            pageSwitcher.ShowPage(targetPage);
-        }
-
-        RefreshButtons();
+        IsIgnOn = false;
+        StopOpeningCoroutine();
+        ApplyCloseMode();
     }
 
-    private void OnSourceClicked(SourceBinding binding)
+    public void ShiftP()
     {
-        if (binding == null)
+        if (!CanAcceptShiftInput())
         {
             return;
         }
 
-        if (currentVehicleMode != DemoVehicleMode.Parking)
+        EnterFullMode();
+    }
+
+    public void ShiftD()
+    {
+        if (!CanAcceptShiftInput())
         {
             return;
         }
 
-        if (binding.sourceId == DemoSourceId.Music)
+        EnterHalfMode();
+    }
+
+    public void ShiftR()
+    {
+        if (!CanAcceptShiftInput())
         {
             return;
         }
 
-        if (binding.sourceId == selectedFullSource)
+        EnterRearViewMode();
+    }
+
+    private bool CanAcceptShiftInput()
+    {
+        if (!IsIgnOn)
         {
-            return;
+            return false;
         }
 
-        selectedFullSource = binding.sourceId;
+        if (CurrentDisplayMode == KinemaMockDisplayMode.Opening)
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private void ApplyCloseMode()
+    {
+        CurrentDisplayMode = KinemaMockDisplayMode.Close;
+
+        SetActive(screenViewportRoot, false);
+        SetActive(sourcePanelObject, false);
+        SetActive(hvacPopupObject, false);
+    }
+
+    private void EnterOpeningMode()
+    {
+        StopOpeningCoroutine();
+
+        CurrentDisplayMode = KinemaMockDisplayMode.Opening;
+
+        SetActive(screenViewportRoot, true);
+        SetActive(sourcePanelObject, false);
+        SetActive(hvacPopupObject, false);
+
+        if (screenViewport != null)
+        {
+            screenViewport.SetMode(DemoScreenOpenMode.SemiOpen);
+        }
 
         if (pageSwitcher != null)
         {
-            pageSwitcher.ShowPage(binding.targetPage);
+            pageSwitcher.ShowPage(openingPage);
         }
 
-        RefreshButtons();
+        openingCoroutine = StartCoroutine(OpeningRoutine());
     }
 
-    private DemoPageId GetTargetPage(DemoSourceId sourceId)
+    private IEnumerator OpeningRoutine()
     {
-        for (int i = 0; i < sources.Length; i++)
+        yield return new WaitForSeconds(openingDuration);
+
+        if (!IsIgnOn)
         {
-            SourceBinding binding = sources[i];
-
-            if (binding == null)
-            {
-                continue;
-            }
-
-            if (binding.sourceId == sourceId)
-            {
-                return binding.targetPage;
-            }
+            yield break;
         }
 
-        return DemoPageId.LightingColorChange;
+        if (CurrentDisplayMode != KinemaMockDisplayMode.Opening)
+        {
+            yield break;
+        }
+
+        EnterFullMode();
     }
 
-    private void RefreshButtons()
+    private void EnterFullMode()
     {
-        bool isParking = currentVehicleMode == DemoVehicleMode.Parking;
+        CurrentDisplayMode = KinemaMockDisplayMode.Full;
 
-        for (int i = 0; i < sources.Length; i++)
+        SetActive(screenViewportRoot, true);
+        SetActive(sourcePanelObject, true);
+        SetActive(hvacPopupObject, false);
+
+        if (screenViewport != null)
         {
-            SourceBinding binding = sources[i];
+            screenViewport.SetMode(DemoScreenOpenMode.FullOpen);
+        }
 
-            if (binding == null || binding.sourceButton == null)
-            {
-                continue;
-            }
-
-            if (isParking)
-            {
-                ApplyParkingState(binding);
-            }
-            else
-            {
-                ApplySemiState(binding);
-            }
+        if (sourcePanel != null)
+        {
+            sourcePanel.ApplyVehicleMode(DemoVehicleMode.Parking);
+            sourcePanel.SetFullSource(parkingDefaultSource, true);
+        }
+        else if (pageSwitcher != null)
+        {
+            pageSwitcher.ShowPage(DemoPageId.LightingColorChange);
         }
     }
 
-    private void ApplyParkingState(SourceBinding binding)
+    private void EnterHalfMode()
     {
-        bool isMusic = binding.sourceId == DemoSourceId.Music;
-        bool isSelected = binding.sourceId == selectedFullSource && !isMusic;
-        bool isClickable = !isMusic && !isSelected;
+        CurrentDisplayMode = KinemaMockDisplayMode.Half;
 
-        binding.sourceButton.SetVisible(true);
-        binding.sourceButton.SetState(isSelected, isClickable);
+        SetActive(screenViewportRoot, true);
+        SetActive(sourcePanelObject, true);
+        SetActive(hvacPopupObject, false);
+
+        if (screenViewport != null)
+        {
+            screenViewport.SetMode(DemoScreenOpenMode.SemiOpen);
+        }
+
+        if (pageSwitcher != null)
+        {
+            pageSwitcher.ShowPage(drivePage);
+        }
+
+        if (sourcePanel != null)
+        {
+            sourcePanel.ApplyVehicleMode(DemoVehicleMode.Drive);
+        }
     }
 
-    private void ApplySemiState(SourceBinding binding)
+    private void EnterRearViewMode()
     {
-        bool isMusic = binding.sourceId == DemoSourceId.Music;
-        bool isSetting = binding.sourceId == DemoSourceId.Setting;
+        CurrentDisplayMode = KinemaMockDisplayMode.RearView;
 
-        if (isSetting)
+        SetActive(screenViewportRoot, true);
+        SetActive(sourcePanelObject, true);
+        SetActive(hvacPopupObject, false);
+
+        if (screenViewport != null)
         {
-            binding.sourceButton.SetVisible(false);
+            screenViewport.SetMode(DemoScreenOpenMode.SemiOpen);
+        }
+
+        if (pageSwitcher != null)
+        {
+            pageSwitcher.ShowPage(rearPage);
+        }
+
+        if (sourcePanel != null)
+        {
+            sourcePanel.ApplyVehicleMode(DemoVehicleMode.Rear);
+        }
+    }
+
+    private void StopOpeningCoroutine()
+    {
+        if (openingCoroutine == null)
+        {
             return;
         }
 
-        binding.sourceButton.SetVisible(true);
-        binding.sourceButton.SetState(isMusic, false);
+        StopCoroutine(openingCoroutine);
+        openingCoroutine = null;
+    }
+
+    private void SetActive(GameObject target, bool isActive)
+    {
+        if (target == null)
+        {
+            return;
+        }
+
+        target.SetActive(isActive);
     }
 }
