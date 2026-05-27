@@ -1,453 +1,196 @@
 using System;
-using System.Collections;
-using TMPro;
 using UnityEngine;
-using UnityEngine.EventSystems;
 
-public class DemoMusicCarouselView : MonoBehaviour, IBeginDragHandler, IDragHandler, IEndDragHandler
+public class DemoSourcePanel : MonoBehaviour
 {
-    [SerializeField] private DemoMusicState musicState;
+    [Serializable]
+    private class SourceBinding
+    {
+        public DemoSourceId sourceId;
+        public DemoPageId targetPage;
+        public DemoSourceButton sourceButton;
+    }
+
     [SerializeField] private DemoPageSwitcher pageSwitcher;
-    [SerializeField] private TMP_Text currentTrackText;
-    [SerializeField] private DemoMusicAlbumCardView[] cardViews;
+    [SerializeField] private SourceBinding[] sources;
+    [SerializeField] private DemoSourceId firstFullSource = DemoSourceId.Setting;
 
-    [SerializeField] private float cardSpacing = 360f;
-    [SerializeField] private float centerScale = 1.0f;
-    [SerializeField] private float sideScale = 0.65f;
-    [SerializeField] private float farScale = 0.45f;
-    [SerializeField] private float farAlpha = 0.0f;
-    [SerializeField] private float sideYOffset = 24f;
+    private DemoVehicleMode currentVehicleMode = DemoVehicleMode.Parking;
+    private DemoSourceId selectedFullSource;
 
-    [SerializeField] private float swipeDistance = 280f;
-    [SerializeField] private float selectThreshold = 0.35f;
-    [SerializeField] private float animationDuration = 0.25f;
+    public DemoSourceId CurrentFullSource => selectedFullSource;
 
-    private Vector2 dragStartPosition;
-    private float currentOffset;
-    private bool isDragging;
-    private bool isChangingTrackByAnimation;
-
-    private Coroutine animationRoutine;
-    private Coroutine refreshRoutine;
-
-    private void Awake()
+    private void Start()
     {
-        ResolveReferences();
-        InitializeCards();
+        selectedFullSource = firstFullSource;
+        RegisterButtonEvents();
+        RefreshButtons();
     }
 
-    private void OnEnable()
+    private void RegisterButtonEvents()
     {
-        ResolveReferences();
-        SubscribeEvents();
-        ForceRefresh();
+        for (int i = 0; i < sources.Length; i++)
+        {
+            SourceBinding binding = sources[i];
+
+            if (binding == null || binding.sourceButton == null)
+            {
+                continue;
+            }
+
+            SourceBinding capturedBinding = binding;
+            binding.sourceButton.Button.onClick.AddListener(() => OnSourceClicked(capturedBinding));
+        }
     }
 
-    private void OnDisable()
+    public void ApplyVehicleMode(DemoVehicleMode vehicleMode)
     {
-        UnsubscribeEvents();
-        StopAnimation();
-        StopRefreshRoutine();
-
-        isDragging = false;
-        isChangingTrackByAnimation = false;
+        currentVehicleMode = vehicleMode;
+        RefreshButtons();
     }
 
-    public void OnCardClicked(int slotOffset)
+    public void ResetFullSource(DemoSourceId sourceId)
     {
-        if (musicState == null || musicState.TrackCount == 0)
+        if (sourceId == DemoSourceId.Music)
+        {
+            selectedFullSource = firstFullSource;
+            return;
+        }
+
+        selectedFullSource = sourceId;
+        RefreshButtons();
+    }
+
+    public void SetFullSource(DemoSourceId sourceId, bool showTargetPage)
+    {
+        if (sourceId == DemoSourceId.Music)
         {
             return;
         }
 
-        if (animationRoutine != null || isDragging)
+        selectedFullSource = sourceId;
+
+        if (showTargetPage && pageSwitcher != null)
         {
-            return;
+            pageSwitcher.ShowPage(GetTargetPage(sourceId));
         }
 
-        if (slotOffset == -1)
-        {
-            AnimateAndSelect(1f);
-            return;
-        }
-
-        if (slotOffset == 1)
-        {
-            AnimateAndSelect(-1f);
-        }
+        RefreshButtons();
     }
 
-    public void OnBeginDrag(PointerEventData eventData)
+    public void ShowCurrentFullSource()
     {
-        if (musicState == null || musicState.TrackCount == 0)
+        if (selectedFullSource == DemoSourceId.Music)
         {
-            return;
-        }
-
-        StopAnimation();
-
-        isDragging = true;
-        dragStartPosition = eventData.position;
-    }
-
-    public void OnDrag(PointerEventData eventData)
-    {
-        if (!isDragging)
-        {
-            return;
-        }
-
-        float dragX = eventData.position.x - dragStartPosition.x;
-        currentOffset = Mathf.Clamp(dragX / swipeDistance, -1f, 1f);
-
-        ApplyOffset(currentOffset);
-    }
-
-    public void OnEndDrag(PointerEventData eventData)
-    {
-        if (!isDragging)
-        {
-            return;
-        }
-
-        isDragging = false;
-
-        if (currentOffset >= selectThreshold)
-        {
-            AnimateAndSelect(1f, currentOffset);
-            return;
-        }
-
-        if (currentOffset <= -selectThreshold)
-        {
-            AnimateAndSelect(-1f, currentOffset);
-            return;
-        }
-
-        AnimateBack(currentOffset);
-    }
-
-    public void ForceRefresh()
-    {
-        StopAnimation();
-
-        isDragging = false;
-        RefreshCards();
-        ApplyOffset(0f);
-    }
-
-    private void ResolveReferences()
-    {
-        if (musicState == null)
-        {
-            musicState = FindFirstObjectByType<DemoMusicState>();
-        }
-
-        if (pageSwitcher == null)
-        {
-            pageSwitcher = FindFirstObjectByType<DemoPageSwitcher>();
-        }
-    }
-
-    private void SubscribeEvents()
-    {
-        if (musicState != null)
-        {
-            musicState.TrackChanged -= OnTrackChanged;
-            musicState.TrackChanged += OnTrackChanged;
+            selectedFullSource = firstFullSource;
         }
 
         if (pageSwitcher != null)
         {
-            pageSwitcher.PageChanged -= OnPageChanged;
-            pageSwitcher.PageChanged += OnPageChanged;
+            pageSwitcher.ShowPage(GetTargetPage(selectedFullSource));
         }
+
+        RefreshButtons();
     }
 
-    private void UnsubscribeEvents()
+    private void OnSourceClicked(SourceBinding binding)
     {
-        if (musicState != null)
+        if (binding == null)
         {
-            musicState.TrackChanged -= OnTrackChanged;
+            return;
         }
+
+        if (currentVehicleMode != DemoVehicleMode.Parking)
+        {
+            return;
+        }
+
+        if (binding.sourceId == DemoSourceId.Music)
+        {
+            return;
+        }
+
+        if (binding.sourceId == selectedFullSource)
+        {
+            return;
+        }
+
+        selectedFullSource = binding.sourceId;
 
         if (pageSwitcher != null)
         {
-            pageSwitcher.PageChanged -= OnPageChanged;
+            pageSwitcher.ShowPage(binding.targetPage);
         }
+
+        RefreshButtons();
     }
 
-    private void InitializeCards()
+    private DemoPageId GetTargetPage(DemoSourceId sourceId)
     {
-        if (cardViews == null)
+        for (int i = 0; i < sources.Length; i++)
         {
-            return;
-        }
+            SourceBinding binding = sources[i];
 
-        int count = cardViews.Length;
-
-        for (int i = 0; i < count; i++)
-        {
-            if (cardViews[i] == null)
+            if (binding == null)
             {
                 continue;
             }
 
-            int slotOffset = GetSlotOffset(i, count);
-            cardViews[i].Initialize(this, slotOffset);
-        }
-    }
-
-    private void OnTrackChanged(int index, DemoMusicTrack track)
-    {
-        if (isChangingTrackByAnimation)
-        {
-            return;
+            if (binding.sourceId == sourceId)
+            {
+                return binding.targetPage;
+            }
         }
 
-        if (isDragging || animationRoutine != null)
-        {
-            return;
-        }
-
-        ForceRefresh();
+        return DemoPageId.LightingColorChange;
     }
 
-    private void OnPageChanged(DemoPageId pageId)
+    private void RefreshButtons()
     {
-        RequestRefreshNextFrame();
-    }
+        bool isParking = currentVehicleMode == DemoVehicleMode.Parking;
 
-    private void RequestRefreshNextFrame()
-    {
-        if (!isActiveAndEnabled)
+        for (int i = 0; i < sources.Length; i++)
         {
-            return;
-        }
+            SourceBinding binding = sources[i];
 
-        StopRefreshRoutine();
-        refreshRoutine = StartCoroutine(RefreshNextFrame());
-    }
-
-    private IEnumerator RefreshNextFrame()
-    {
-        yield return null;
-
-        refreshRoutine = null;
-        ForceRefresh();
-    }
-
-    private void RefreshCards()
-    {
-        UpdateCurrentTrackText();
-
-        if (musicState == null || cardViews == null)
-        {
-            return;
-        }
-
-        int count = cardViews.Length;
-
-        for (int i = 0; i < count; i++)
-        {
-            DemoMusicAlbumCardView card = cardViews[i];
-
-            if (card == null)
+            if (binding == null || binding.sourceButton == null)
             {
                 continue;
             }
 
-            int slotOffset = GetSlotOffset(i, count);
-
-            card.Initialize(this, slotOffset);
-            card.SetSlotOffset(slotOffset);
-            card.SetTrack(musicState.GetTrackByOffset(slotOffset));
-        }
-    }
-
-    private void UpdateCurrentTrackText()
-    {
-        if (currentTrackText == null || musicState == null)
-        {
-            return;
-        }
-
-        DemoMusicTrack track = musicState.GetSelectedTrack();
-
-        if (track == null)
-        {
-            currentTrackText.text = "";
-            return;
-        }
-
-        currentTrackText.text = track.albumTitle + "\n" + track.songTitle;
-    }
-
-    private int GetSlotOffset(int cardIndex, int cardCount)
-    {
-        int centerIndex = cardCount / 2;
-        return cardIndex - centerIndex;
-    }
-
-    private void ApplyOffset(float offset)
-    {
-        currentOffset = offset;
-
-        if (cardViews == null)
-        {
-            return;
-        }
-
-        int count = cardViews.Length;
-
-        for (int i = 0; i < count; i++)
-        {
-            DemoMusicAlbumCardView card = cardViews[i];
-
-            if (card == null)
+            if (isParking)
             {
-                continue;
+                ApplyParkingState(binding);
             }
-
-            int slotOffset = GetSlotOffset(i, count);
-            float positionIndex = slotOffset + offset;
-            float distance = Mathf.Abs(positionIndex);
-
-            float x = positionIndex * cardSpacing;
-            float y = -sideYOffset * Mathf.Clamp01(distance);
-            float scale = CalculateScale(distance);
-            float alpha = CalculateAlpha(distance);
-
-            bool isSideCard = Mathf.Abs(slotOffset) == 1;
-            bool canClick = !isDragging && Mathf.Abs(offset) < 0.05f && isSideCard;
-
-            card.ApplyVisual(x, y, scale, alpha, canClick);
+            else
+            {
+                ApplySemiState(binding);
+            }
         }
     }
 
-    private float CalculateScale(float distance)
+    private void ApplyParkingState(SourceBinding binding)
     {
-        float clampedDistance = Mathf.Clamp(distance, 0f, 2f);
+        bool isMusic = binding.sourceId == DemoSourceId.Music;
+        bool isSelected = binding.sourceId == selectedFullSource && !isMusic;
+        bool isClickable = !isMusic && !isSelected;
 
-        if (clampedDistance <= 1f)
+        binding.sourceButton.SetVisible(true);
+        binding.sourceButton.SetState(isSelected, isClickable);
+    }
+
+    private void ApplySemiState(SourceBinding binding)
+    {
+        bool isMusic = binding.sourceId == DemoSourceId.Music;
+        bool isSetting = binding.sourceId == DemoSourceId.Setting;
+
+        if (isSetting)
         {
-            return Mathf.Lerp(centerScale, sideScale, clampedDistance);
-        }
-
-        return Mathf.Lerp(sideScale, farScale, clampedDistance - 1f);
-    }
-
-    private float CalculateAlpha(float distance)
-    {
-        float clampedDistance = Mathf.Clamp(distance, 0f, 2f);
-
-        if (clampedDistance <= 1f)
-        {
-            return 1f;
-        }
-
-        return Mathf.Lerp(1f, farAlpha, clampedDistance - 1f);
-    }
-
-    private void AnimateAndSelect(float targetOffset)
-    {
-        AnimateAndSelect(targetOffset, currentOffset);
-    }
-
-    private void AnimateAndSelect(float targetOffset, float startOffset)
-    {
-        StopAnimation();
-
-        animationRoutine = StartCoroutine(
-            AnimateOffset(
-                startOffset,
-                targetOffset,
-                () =>
-                {
-                    if (musicState == null)
-                    {
-                        return;
-                    }
-
-                    isChangingTrackByAnimation = true;
-
-                    if (targetOffset > 0f)
-                    {
-                        musicState.SelectPrevious();
-                    }
-                    else
-                    {
-                        musicState.SelectNext();
-                    }
-
-                    isChangingTrackByAnimation = false;
-
-                    RefreshCards();
-                    ApplyOffset(0f);
-                }
-            )
-        );
-    }
-
-    private void AnimateBack(float startOffset)
-    {
-        StopAnimation();
-
-        animationRoutine = StartCoroutine(
-            AnimateOffset(
-                startOffset,
-                0f,
-                () =>
-                {
-                    RefreshCards();
-                    ApplyOffset(0f);
-                }
-            )
-        );
-    }
-
-    private IEnumerator AnimateOffset(float from, float to, Action onComplete)
-    {
-        float elapsed = 0f;
-
-        while (elapsed < animationDuration)
-        {
-            elapsed += Time.deltaTime;
-
-            float rate = Mathf.Clamp01(elapsed / animationDuration);
-            float smoothRate = Mathf.SmoothStep(0f, 1f, rate);
-            float offset = Mathf.Lerp(from, to, smoothRate);
-
-            ApplyOffset(offset);
-
-            yield return null;
-        }
-
-        ApplyOffset(to);
-
-        animationRoutine = null;
-        onComplete?.Invoke();
-    }
-
-    private void StopAnimation()
-    {
-        if (animationRoutine == null)
-        {
+            binding.sourceButton.SetVisible(false);
             return;
         }
 
-        StopCoroutine(animationRoutine);
-        animationRoutine = null;
-    }
-
-    private void StopRefreshRoutine()
-    {
-        if (refreshRoutine == null)
-        {
-            return;
-        }
-
-        StopCoroutine(refreshRoutine);
-        refreshRoutine = null;
+        binding.sourceButton.SetVisible(true);
+        binding.sourceButton.SetState(isMusic, false);
     }
 }
