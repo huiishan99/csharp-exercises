@@ -1,196 +1,101 @@
-using System;
+using System.Collections;
 using UnityEngine;
 
-public class DemoSourcePanel : MonoBehaviour
+public class KinemaMockPopupController : MonoBehaviour
 {
-    [Serializable]
-    private class SourceBinding
+    [SerializeField] private GameObject popupObject;
+    [SerializeField] private float autoCloseSeconds = 10f;
+
+    private Coroutine autoCloseCoroutine;
+
+    public bool IsVisible
     {
-        public DemoSourceId sourceId;
-        public DemoPageId targetPage;
-        public DemoSourceButton sourceButton;
-    }
-
-    [SerializeField] private DemoPageSwitcher pageSwitcher;
-    [SerializeField] private SourceBinding[] sources;
-    [SerializeField] private DemoSourceId firstFullSource = DemoSourceId.Setting;
-
-    private DemoVehicleMode currentVehicleMode = DemoVehicleMode.Parking;
-    private DemoSourceId selectedFullSource;
-
-    public DemoSourceId CurrentFullSource => selectedFullSource;
-
-    private void Start()
-    {
-        selectedFullSource = firstFullSource;
-        RegisterButtonEvents();
-        RefreshButtons();
-    }
-
-    private void RegisterButtonEvents()
-    {
-        for (int i = 0; i < sources.Length; i++)
+        get
         {
-            SourceBinding binding = sources[i];
-
-            if (binding == null || binding.sourceButton == null)
-            {
-                continue;
-            }
-
-            SourceBinding capturedBinding = binding;
-            binding.sourceButton.Button.onClick.AddListener(() => OnSourceClicked(capturedBinding));
+            return popupObject != null && popupObject.activeSelf;
         }
     }
 
-    public void ApplyVehicleMode(DemoVehicleMode vehicleMode)
+    private void Awake()
     {
-        currentVehicleMode = vehicleMode;
-        RefreshButtons();
+        HidePopup();
     }
 
-    public void ResetFullSource(DemoSourceId sourceId)
+    private void OnDisable()
     {
-        if (sourceId == DemoSourceId.Music)
+        StopAutoCloseTimer();
+    }
+
+    public void TogglePopup()
+    {
+        if (IsVisible)
         {
-            selectedFullSource = firstFullSource;
+            HidePopup();
             return;
         }
 
-        selectedFullSource = sourceId;
-        RefreshButtons();
+        ShowPopup();
     }
 
-    public void SetFullSource(DemoSourceId sourceId, bool showTargetPage)
+    public void ShowPopup()
     {
-        if (sourceId == DemoSourceId.Music)
+        if (popupObject == null)
         {
             return;
         }
 
-        selectedFullSource = sourceId;
-
-        if (showTargetPage && pageSwitcher != null)
-        {
-            pageSwitcher.ShowPage(GetTargetPage(sourceId));
-        }
-
-        RefreshButtons();
+        popupObject.SetActive(true);
+        RestartAutoCloseTimer();
     }
 
-    public void ShowCurrentFullSource()
+    public void HidePopup()
     {
-        if (selectedFullSource == DemoSourceId.Music)
-        {
-            selectedFullSource = firstFullSource;
-        }
+        StopAutoCloseTimer();
 
-        if (pageSwitcher != null)
-        {
-            pageSwitcher.ShowPage(GetTargetPage(selectedFullSource));
-        }
-
-        RefreshButtons();
-    }
-
-    private void OnSourceClicked(SourceBinding binding)
-    {
-        if (binding == null)
+        if (popupObject == null)
         {
             return;
         }
 
-        if (currentVehicleMode != DemoVehicleMode.Parking)
+        popupObject.SetActive(false);
+    }
+
+    public void NotifyUserOperation()
+    {
+        if (!IsVisible)
         {
             return;
         }
 
-        if (binding.sourceId == DemoSourceId.Music)
+        RestartAutoCloseTimer();
+    }
+
+    private void RestartAutoCloseTimer()
+    {
+        StopAutoCloseTimer();
+
+        if (autoCloseSeconds <= 0f)
         {
             return;
         }
 
-        if (binding.sourceId == selectedFullSource)
+        autoCloseCoroutine = StartCoroutine(AutoCloseRoutine());
+    }
+
+    private IEnumerator AutoCloseRoutine()
+    {
+        yield return new WaitForSeconds(autoCloseSeconds);
+        HidePopup();
+    }
+
+    private void StopAutoCloseTimer()
+    {
+        if (autoCloseCoroutine == null)
         {
             return;
         }
 
-        selectedFullSource = binding.sourceId;
-
-        if (pageSwitcher != null)
-        {
-            pageSwitcher.ShowPage(binding.targetPage);
-        }
-
-        RefreshButtons();
-    }
-
-    private DemoPageId GetTargetPage(DemoSourceId sourceId)
-    {
-        for (int i = 0; i < sources.Length; i++)
-        {
-            SourceBinding binding = sources[i];
-
-            if (binding == null)
-            {
-                continue;
-            }
-
-            if (binding.sourceId == sourceId)
-            {
-                return binding.targetPage;
-            }
-        }
-
-        return DemoPageId.LightingColorChange;
-    }
-
-    private void RefreshButtons()
-    {
-        bool isParking = currentVehicleMode == DemoVehicleMode.Parking;
-
-        for (int i = 0; i < sources.Length; i++)
-        {
-            SourceBinding binding = sources[i];
-
-            if (binding == null || binding.sourceButton == null)
-            {
-                continue;
-            }
-
-            if (isParking)
-            {
-                ApplyParkingState(binding);
-            }
-            else
-            {
-                ApplySemiState(binding);
-            }
-        }
-    }
-
-    private void ApplyParkingState(SourceBinding binding)
-    {
-        bool isMusic = binding.sourceId == DemoSourceId.Music;
-        bool isSelected = binding.sourceId == selectedFullSource && !isMusic;
-        bool isClickable = !isMusic && !isSelected;
-
-        binding.sourceButton.SetVisible(true);
-        binding.sourceButton.SetState(isSelected, isClickable);
-    }
-
-    private void ApplySemiState(SourceBinding binding)
-    {
-        bool isMusic = binding.sourceId == DemoSourceId.Music;
-        bool isSetting = binding.sourceId == DemoSourceId.Setting;
-
-        if (isSetting)
-        {
-            binding.sourceButton.SetVisible(false);
-            return;
-        }
-
-        binding.sourceButton.SetVisible(true);
-        binding.sourceButton.SetState(isMusic, false);
+        StopCoroutine(autoCloseCoroutine);
+        autoCloseCoroutine = null;
     }
 }
