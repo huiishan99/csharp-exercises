@@ -1,77 +1,78 @@
 using System;
 using UnityEngine;
-using UnityEngine.UI;
+using UnityEngine.Events;
 
 namespace PushButtonSliderLite
 {
     /// <summary>
-    /// 只负责根据主题按钮 index 替换目标 Image 的 Sprite。
-    /// 不负责按钮输入、不负责按钮组状态、不负责 Slider 数值。
+    /// 只负责用固定步长调整 HorizontalSliderValue。
+    /// 不负责 Pointer 拖拽，也不控制 Slider glow。
     /// </summary>
     [DisallowMultipleComponent]
-    public sealed class ThemeSpriteApplier : MonoBehaviour
+    public sealed class HorizontalSliderStepController : MonoBehaviour
     {
         [Serializable]
-        public sealed class ThemeSpriteSet
-        {
-            [Tooltip("对应 Slider Track 的 Sprite")]
-            public Sprite sliderTrackSprite;
+        public sealed class FloatEvent : UnityEvent<float> { }
 
-            [Tooltip("对应外部 Image 的 Sprite")]
-            public Sprite externalImageSprite;
-        }
+        [Header("目标 Slider")]
+        [SerializeField] private HorizontalSliderValue sliderValue;
 
-        [Header("主题按钮组")]
-        [SerializeField] private ThemeButtonGroup buttonGroup;
+        [Header("可选：只用于同步隐藏状态下的 Glow 位置，不会显示 Glow")]
+        [SerializeField] private SliderDragVisualEffect visualEffect;
 
-        [Header("要被替换的 Image")]
-        [SerializeField] private Image sliderTrackImage;
-        [SerializeField] private Image externalImage;
+        [Header("步进参数")]
+        [SerializeField, Range(0.001f, 1f)] private float step = 0.05f;
 
-        [Header("6组主题 Sprite：顺序对应按钮 1,2,3,4,5,6")]
-        [SerializeField] private ThemeSpriteSet[] themeSprites = new ThemeSpriteSet[6];
+        [Header("数值变化事件")]
+        public FloatEvent onValueChangedByStep = new FloatEvent();
 
         private void Awake()
         {
-            if (buttonGroup == null)
-                buttonGroup = GetComponent<ThemeButtonGroup>();
-        }
+            if (sliderValue == null)
+                sliderValue = GetComponent<HorizontalSliderValue>();
 
-        private void OnEnable()
-        {
-            if (buttonGroup != null)
-                buttonGroup.onSelectedIndexChanged.AddListener(ApplyByIndex);
-        }
-
-        private void Start()
-        {
-            if (buttonGroup != null)
-                buttonGroup.NotifyCurrentSelection();
-        }
-
-        private void OnDisable()
-        {
-            if (buttonGroup != null)
-                buttonGroup.onSelectedIndexChanged.RemoveListener(ApplyByIndex);
+            if (visualEffect == null)
+                visualEffect = GetComponent<SliderDragVisualEffect>();
         }
 
         /// <summary>
-        /// index 从 0 开始。按钮1对应 index=0，按钮6对应 index=5。
+        /// 给 + 按钮的 OnClick 绑定这个方法。
         /// </summary>
-        public void ApplyByIndex(int index)
+        public void Increase()
         {
-            if (themeSprites == null || index < 0 || index >= themeSprites.Length)
+            AddStep(1f);
+        }
+
+        /// <summary>
+        /// 给 - 按钮的 OnClick 绑定这个方法。
+        /// </summary>
+        public void Decrease()
+        {
+            AddStep(-1f);
+        }
+
+        /// <summary>
+        /// 外部也可以直接传入方向：1 表示增加，-1 表示减少。
+        /// </summary>
+        public void AddStep(float direction)
+        {
+            if (sliderValue == null)
                 return;
 
-            ThemeSpriteSet spriteSet = themeSprites[index];
-            if (spriteSet == null)
-                return;
+            float previousValue = sliderValue.Value;
+            float nextValue = previousValue + step * Mathf.Sign(direction);
+            sliderValue.SetValue(nextValue);
 
-            if (sliderTrackImage != null && spriteSet.sliderTrackSprite != null)
-                sliderTrackImage.sprite = spriteSet.sliderTrackSprite;
+            if (visualEffect != null)
+                visualEffect.SyncGlowPosition();
 
-            if (externalImage != null && spriteSet.externalImageSprite != null)
-                externalImage.sprite = spriteSet.externalImageSprite;
+            if (!Mathf.Approximately(previousValue, sliderValue.Value))
+                onValueChangedByStep.Invoke(sliderValue.Value);
+        }
+
+        public void SetStep(float newStep)
+        {
+            step = Mathf.Clamp(newStep, 0.001f, 1f);
         }
     }
 }
