@@ -1,141 +1,76 @@
 using UnityEngine;
+using UnityEngine.EventSystems;
 
-#if ENABLE_INPUT_SYSTEM
-using UnityEngine.InputSystem;
-#endif
-
-public class KinemaMockKeyboardInput : MonoBehaviour
+namespace PushButtonSliderLite
 {
-    [SerializeField] private KinemaMockDisplayController controller;
-
-    private void Update()
+    /// <summary>
+    /// 只负责单个主题按钮的点击输入和自身选中视觉。
+    /// 不负责切换图片、不负责管理其他按钮。
+    /// </summary>
+    [DisallowMultipleComponent]
+    public sealed class ThemeSelectButton : MonoBehaviour, IPointerClickHandler
     {
-        if (controller == null)
+        [Header("视觉效果")]
+        [SerializeField] private PressVisualEffect visualEffect;
+
+        [Header("输入状态")]
+        [SerializeField] private bool interactable = true;
+
+        private ThemeButtonGroup ownerGroup;
+        private int buttonIndex = -1;
+        private bool isSelected;
+
+        public int ButtonIndex
         {
-            return;
+            get { return buttonIndex; }
         }
 
-        if (IsIgnTogglePressed())
+        public bool IsSelected
         {
-            controller.ToggleIgn();
-            return;
+            get { return isSelected; }
         }
 
-        if (IsAutoPressed())
+        private void Awake()
         {
-            controller.ToggleAutoPopup();
-            return;
+            if (visualEffect == null)
+                visualEffect = GetComponent<PressVisualEffect>();
         }
 
-        if (IsParkingPressed())
+        /// <summary>
+        /// 由 ThemeButtonGroup 初始化。不要在 Inspector 手动调用。
+        /// </summary>
+        public void Initialize(ThemeButtonGroup group, int index)
         {
-            controller.ShiftP();
-            return;
+            ownerGroup = group;
+            buttonIndex = index;
         }
 
-        if (IsDrivePressed())
+        public void OnPointerClick(PointerEventData eventData)
         {
-            controller.ShiftD();
-            return;
+            if (!interactable)
+                return;
+
+            if (ownerGroup == null)
+                return;
+
+            ownerGroup.SelectIndex(buttonIndex);
         }
 
-        if (IsRearPressed())
+        /// <summary>
+        /// 设置是否处于“按住/选中”状态。
+        /// 这里使用 PressVisualEffect 的 pressed 表现作为 selected 表现。
+        /// </summary>
+        public void SetSelected(bool selected)
         {
-            controller.ShiftR();
-        }
-    }
+            isSelected = selected;
 
-    private bool IsIgnTogglePressed()
-    {
-#if ENABLE_INPUT_SYSTEM
-        Keyboard keyboard = Keyboard.current;
-
-        if (keyboard == null)
-        {
-            return false;
+            if (visualEffect != null)
+                visualEffect.SetPressed(selected);
         }
 
-        return keyboard.digit0Key.wasPressedThisFrame
-            || keyboard.numpad0Key.wasPressedThisFrame
-            || keyboard.iKey.wasPressedThisFrame;
-#elif ENABLE_LEGACY_INPUT_MANAGER
-        return Input.GetKeyDown(KeyCode.Alpha0)
-            || Input.GetKeyDown(KeyCode.Keypad0)
-            || Input.GetKeyDown(KeyCode.I);
-#else
-        return false;
-#endif
-    }
-
-    private bool IsAutoPressed()
-    {
-#if ENABLE_INPUT_SYSTEM
-        Keyboard keyboard = Keyboard.current;
-
-        if (keyboard == null)
+        public void SetInteractable(bool canInteract)
         {
-            return false;
+            interactable = canInteract;
         }
-
-        return keyboard.aKey.wasPressedThisFrame;
-#elif ENABLE_LEGACY_INPUT_MANAGER
-        return Input.GetKeyDown(KeyCode.A);
-#else
-        return false;
-#endif
-    }
-
-    private bool IsParkingPressed()
-    {
-#if ENABLE_INPUT_SYSTEM
-        Keyboard keyboard = Keyboard.current;
-
-        if (keyboard == null)
-        {
-            return false;
-        }
-
-        return keyboard.pKey.wasPressedThisFrame;
-#elif ENABLE_LEGACY_INPUT_MANAGER
-        return Input.GetKeyDown(KeyCode.P);
-#else
-        return false;
-#endif
-    }
-
-    private bool IsDrivePressed()
-    {
-#if ENABLE_INPUT_SYSTEM
-        Keyboard keyboard = Keyboard.current;
-
-        if (keyboard == null)
-        {
-            return false;
-        }
-
-        return keyboard.dKey.wasPressedThisFrame;
-#elif ENABLE_LEGACY_INPUT_MANAGER
-        return Input.GetKeyDown(KeyCode.D);
-#else
-        return false;
-#endif
-    }
-
-    private bool IsRearPressed()
-    {
-#if ENABLE_INPUT_SYSTEM
-        Keyboard keyboard = Keyboard.current;
-
-        if (keyboard == null)
-        {
-            return false;
-        }
-
-        return keyboard.rKey.wasPressedThisFrame;
-#elif ENABLE_LEGACY_INPUT_MANAGER
-        return Input.GetKeyDown(KeyCode.R);
-#else
-        return false;
-#endif
     }
 }
