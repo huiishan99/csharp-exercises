@@ -1,76 +1,127 @@
+using System;
 using UnityEngine;
-using UnityEngine.EventSystems;
+using UnityEngine.Events;
 
 namespace PushButtonSliderLite
 {
     /// <summary>
-    /// 只负责单个主题按钮的点击输入和自身选中视觉。
-    /// 不负责切换图片、不负责管理其他按钮。
+    /// 只负责一组主题按钮的“六选一”状态管理。
+    /// 不负责具体图片替换，也不负责按钮视觉细节。
     /// </summary>
     [DisallowMultipleComponent]
-    public sealed class ThemeSelectButton : MonoBehaviour, IPointerClickHandler
+    public sealed class ThemeButtonGroup : MonoBehaviour
     {
-        [Header("视觉效果")]
-        [SerializeField] private PressVisualEffect visualEffect;
+        [Serializable]
+        public sealed class IntEvent : UnityEvent<int> { }
 
-        [Header("输入状态")]
-        [SerializeField] private bool interactable = true;
+        [Header("按钮列表：按 1,2,3,4,5,6 的顺序放入")]
+        [SerializeField] private ThemeSelectButton[] buttons = new ThemeSelectButton[6];
 
-        private ThemeButtonGroup ownerGroup;
-        private int buttonIndex = -1;
-        private bool isSelected;
+        [Header("默认选中项")]
+        [SerializeField] private bool selectDefaultOnStart = true;
+        [SerializeField, Min(0)] private int defaultSelectedIndex = 5;
 
-        public int ButtonIndex
+        [Header("选择变化事件")]
+        public IntEvent onSelectedIndexChanged = new IntEvent();
+
+        private int selectedIndex = -1;
+        private bool initialized;
+
+        public int SelectedIndex
         {
-            get { return buttonIndex; }
+            get { return selectedIndex; }
         }
 
-        public bool IsSelected
+        public int ButtonCount
         {
-            get { return isSelected; }
+            get { return buttons == null ? 0 : buttons.Length; }
         }
 
         private void Awake()
         {
-            if (visualEffect == null)
-                visualEffect = GetComponent<PressVisualEffect>();
+            InitializeButtons();
+        }
+
+        private void Start()
+        {
+            if (selectDefaultOnStart)
+                SelectIndex(defaultSelectedIndex);
+        }
+
+        private void OnValidate()
+        {
+            if (defaultSelectedIndex < 0)
+                defaultSelectedIndex = 0;
+        }
+
+        private void InitializeButtons()
+        {
+            if (initialized)
+                return;
+
+            initialized = true;
+
+            if (buttons == null)
+                return;
+
+            for (int i = 0; i < buttons.Length; i++)
+            {
+                if (buttons[i] == null)
+                    continue;
+
+                buttons[i].Initialize(this, i);
+                buttons[i].SetSelected(false);
+            }
         }
 
         /// <summary>
-        /// 由 ThemeButtonGroup 初始化。不要在 Inspector 手动调用。
+        /// 选择指定 index 的按钮。index 从 0 开始。
+        /// 6号按钮对应 index = 5。
         /// </summary>
-        public void Initialize(ThemeButtonGroup group, int index)
+        public void SelectIndex(int index)
         {
-            ownerGroup = group;
-            buttonIndex = index;
-        }
+            InitializeButtons();
 
-        public void OnPointerClick(PointerEventData eventData)
-        {
-            if (!interactable)
+            if (buttons == null || buttons.Length == 0)
                 return;
 
-            if (ownerGroup == null)
+            if (index < 0 || index >= buttons.Length)
+            {
+                Debug.LogWarning($"ThemeButtonGroup: index {index} is out of range.", this);
+                return;
+            }
+
+            if (buttons[index] == null)
+            {
+                Debug.LogWarning($"ThemeButtonGroup: button at index {index} is not assigned.", this);
+                return;
+            }
+
+            if (selectedIndex == index)
                 return;
 
-            ownerGroup.SelectIndex(buttonIndex);
+            selectedIndex = index;
+
+            for (int i = 0; i < buttons.Length; i++)
+            {
+                if (buttons[i] == null)
+                    continue;
+
+                buttons[i].SetSelected(i == selectedIndex);
+            }
+
+            onSelectedIndexChanged.Invoke(selectedIndex);
         }
 
         /// <summary>
-        /// 设置是否处于“按住/选中”状态。
-        /// 这里使用 PressVisualEffect 的 pressed 表现作为 selected 表现。
+        /// 重新应用当前选中状态。用于手动刷新外部绑定。
         /// </summary>
-        public void SetSelected(bool selected)
+        public void NotifyCurrentSelection()
         {
-            isSelected = selected;
+            if (selectedIndex < 0)
+                return;
 
-            if (visualEffect != null)
-                visualEffect.SetPressed(selected);
-        }
-
-        public void SetInteractable(bool canInteract)
-        {
-            interactable = canInteract;
+            onSelectedIndexChanged.Invoke(selectedIndex);
         }
     }
 }
