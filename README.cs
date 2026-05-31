@@ -1,112 +1,167 @@
-using System;
 using UnityEngine;
 
-public class DemoMusicState : MonoBehaviour
+[RequireComponent(typeof(AudioSource))]
+public class DemoMusicPlayer : MonoBehaviour
 {
-    [SerializeField] private DemoMusicTrack[] tracks = new DemoMusicTrack[9];
-    [SerializeField] private int firstTrackIndex = 0;
+    [SerializeField] private DemoMusicState musicState;
+    [SerializeField] private DemoPageSwitcher pageSwitcher;
 
-    private int selectedTrackIndex;
-
-    public event Action<int, DemoMusicTrack> TrackChanged;
-
-    public int SelectedTrackIndex
+    [SerializeField] private DemoPageId[] musicPages =
     {
-        get { return selectedTrackIndex; }
-    }
+        DemoPageId.NormalDrive,
+        DemoPageId.RearView
+    };
 
-    public int TrackCount
+    [SerializeField] private bool playOnMusicPageEntered = true;
+    [SerializeField] private bool resetOnMusicPageEntered = true;
+    [SerializeField] private bool stopOnNonMusicPage = true;
+    [SerializeField] private bool loopCurrentClip = true;
+
+    private AudioSource audioSource;
+    private DemoPageId currentPage;
+
+    public float NormalizedProgress
     {
-        get { return tracks == null ? 0 : tracks.Length; }
+        get
+        {
+            if (audioSource == null || audioSource.clip == null || audioSource.clip.length <= 0f)
+            {
+                return 0f;
+            }
+
+            return Mathf.Clamp01(audioSource.time / audioSource.clip.length);
+        }
     }
 
     private void Awake()
     {
-        selectedTrackIndex = NormalizeIndex(firstTrackIndex);
+        audioSource = GetComponent<AudioSource>();
+        audioSource.playOnAwake = false;
+        audioSource.loop = loopCurrentClip;
+
+        ResolveReferences();
     }
 
-    private void Start()
+    private void OnEnable()
     {
-        NotifyTrackChanged();
+        ResolveReferences();
+
+        if (musicState != null)
+        {
+            musicState.TrackChanged -= OnTrackChanged;
+            musicState.TrackChanged += OnTrackChanged;
+        }
+
+        if (pageSwitcher != null)
+        {
+            pageSwitcher.PageChanged -= OnPageChanged;
+            pageSwitcher.PageChanged += OnPageChanged;
+        }
     }
 
-    public DemoMusicTrack GetSelectedTrack()
+    private void OnDisable()
     {
-        return GetTrack(selectedTrackIndex);
+        if (musicState != null)
+        {
+            musicState.TrackChanged -= OnTrackChanged;
+        }
+
+        if (pageSwitcher != null)
+        {
+            pageSwitcher.PageChanged -= OnPageChanged;
+        }
     }
 
-    public DemoMusicTrack GetTrackByOffset(int offset)
+    public void PlaySelectedFromStart()
     {
-        return GetTrack(selectedTrackIndex + offset);
-    }
-
-    public void SelectRelative(int offset)
-    {
-        SelectTrack(selectedTrackIndex + offset);
-    }
-
-    public void SelectNext()
-    {
-        SelectRelative(1);
-    }
-
-    public void SelectPrevious()
-    {
-        SelectRelative(-1);
-    }
-
-    public void ResetTrack()
-    {
-        SelectTrack(firstTrackIndex);
-    }
-
-    public void SelectTrack(int trackIndex)
-    {
-        if (TrackCount == 0)
+        if (musicState == null)
         {
             return;
         }
 
-        int normalizedIndex = NormalizeIndex(trackIndex);
+        DemoMusicTrack track = musicState.GetSelectedTrack();
 
-        if (selectedTrackIndex == normalizedIndex)
+        if (track == null || track.audioClip == null)
+        {
+            Stop();
+            return;
+        }
+
+        audioSource.clip = track.audioClip;
+        audioSource.loop = loopCurrentClip;
+        audioSource.time = 0f;
+        audioSource.Play();
+    }
+
+    public void Stop()
+    {
+        if (audioSource == null)
         {
             return;
         }
 
-        selectedTrackIndex = normalizedIndex;
-        NotifyTrackChanged();
+        audioSource.Stop();
+        audioSource.time = 0f;
     }
 
-    private DemoMusicTrack GetTrack(int index)
+    private void OnTrackChanged(int index, DemoMusicTrack track)
     {
-        if (TrackCount == 0)
+        if (IsMusicPage(currentPage))
         {
-            return null;
+            PlaySelectedFromStart();
         }
-
-        return tracks[NormalizeIndex(index)];
     }
 
-    private int NormalizeIndex(int index)
+    private void OnPageChanged(DemoPageId pageId)
     {
-        if (TrackCount == 0)
+        currentPage = pageId;
+
+        if (IsMusicPage(pageId))
         {
-            return 0;
+            if (playOnMusicPageEntered)
+            {
+                if (resetOnMusicPageEntered)
+                {
+                    PlaySelectedFromStart();
+                }
+                else if (!audioSource.isPlaying)
+                {
+                    audioSource.Play();
+                }
+            }
+
+            return;
         }
 
-        int result = index % TrackCount;
-
-        if (result < 0)
+        if (stopOnNonMusicPage)
         {
-            result += TrackCount;
+            Stop();
         }
-
-        return result;
     }
 
-    private void NotifyTrackChanged()
+    private bool IsMusicPage(DemoPageId pageId)
     {
-        TrackChanged?.Invoke(selectedTrackIndex, GetSelectedTrack());
+        for (int i = 0; i < musicPages.Length; i++)
+        {
+            if (musicPages[i] == pageId)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private void ResolveReferences()
+    {
+        if (musicState == null)
+        {
+            musicState = FindFirstObjectByType<DemoMusicState>();
+        }
+
+        if (pageSwitcher == null)
+        {
+            pageSwitcher = FindFirstObjectByType<DemoPageSwitcher>();
+        }
     }
 }
