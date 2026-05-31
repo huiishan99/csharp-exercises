@@ -1,167 +1,125 @@
 using UnityEngine;
+using UnityEngine.UI;
 
-[RequireComponent(typeof(AudioSource))]
-public class DemoMusicPlayer : MonoBehaviour
+public class DemoMusicProgressBarView : MonoBehaviour
 {
-    [SerializeField] private DemoMusicState musicState;
-    [SerializeField] private DemoPageSwitcher pageSwitcher;
+    [SerializeField] private DemoMusicPlayer musicPlayer;
 
-    [SerializeField] private DemoPageId[] musicPages =
-    {
-        DemoPageId.NormalDrive,
-        DemoPageId.RearView
-    };
+    [SerializeField] private RectTransform baseBarRect;
+    [SerializeField] private RectTransform fillStartRect;
+    [SerializeField] private RectTransform fillMiddleRect;
+    [SerializeField] private RectTransform fillEndRect;
 
-    [SerializeField] private bool playOnMusicPageEntered = true;
-    [SerializeField] private bool resetOnMusicPageEntered = true;
-    [SerializeField] private bool stopOnNonMusicPage = true;
-    [SerializeField] private bool loopCurrentClip = true;
+    [SerializeField] private Image fillStartImage;
+    [SerializeField] private Image fillMiddleImage;
+    [SerializeField] private Image fillEndImage;
 
-    private AudioSource audioSource;
-    private DemoPageId currentPage;
-
-    public float NormalizedProgress
-    {
-        get
-        {
-            if (audioSource == null || audioSource.clip == null || audioSource.clip.length <= 0f)
-            {
-                return 0f;
-            }
-
-            return Mathf.Clamp01(audioSource.time / audioSource.clip.length);
-        }
-    }
+    [SerializeField] private float totalWidth = 520f;
+    [SerializeField] private float startWidth = 18f;
+    [SerializeField] private float endWidth = 18f;
+    [SerializeField] private bool hideFillWhenZero = true;
 
     private void Awake()
     {
-        audioSource = GetComponent<AudioSource>();
-        audioSource.playOnAwake = false;
-        audioSource.loop = loopCurrentClip;
-
         ResolveReferences();
     }
 
-    private void OnEnable()
+    private void Update()
     {
         ResolveReferences();
 
-        if (musicState != null)
-        {
-            musicState.TrackChanged -= OnTrackChanged;
-            musicState.TrackChanged += OnTrackChanged;
-        }
+        float progress = musicPlayer == null
+            ? 0f
+            : musicPlayer.NormalizedProgress;
 
-        if (pageSwitcher != null)
-        {
-            pageSwitcher.PageChanged -= OnPageChanged;
-            pageSwitcher.PageChanged += OnPageChanged;
-        }
+        SetProgress(progress);
     }
 
-    private void OnDisable()
+    public void SetProgress(float progress)
     {
-        if (musicState != null)
-        {
-            musicState.TrackChanged -= OnTrackChanged;
-        }
+        progress = Mathf.Clamp01(progress);
 
-        if (pageSwitcher != null)
-        {
-            pageSwitcher.PageChanged -= OnPageChanged;
-        }
-    }
+        float width = GetTotalWidth();
+        float fillWidth = width * progress;
 
-    public void PlaySelectedFromStart()
-    {
-        if (musicState == null)
+        bool hasProgress = fillWidth > 0.01f;
+
+        SetFillVisible(!hideFillWhenZero || hasProgress);
+
+        if (!hasProgress)
         {
             return;
         }
 
-        DemoMusicTrack track = musicState.GetSelectedTrack();
+        float realStartWidth = Mathf.Min(startWidth, fillWidth);
+        float remainingAfterStart = Mathf.Max(0f, fillWidth - realStartWidth);
+        float realEndWidth = Mathf.Min(endWidth, remainingAfterStart);
+        float middleWidth = Mathf.Max(0f, fillWidth - realStartWidth - realEndWidth);
 
-        if (track == null || track.audioClip == null)
+        SetRectWidth(fillStartRect, realStartWidth);
+        SetRectWidth(fillMiddleRect, middleWidth);
+        SetRectWidth(fillEndRect, realEndWidth);
+
+        SetRectX(fillStartRect, realStartWidth * 0.5f);
+        SetRectX(fillMiddleRect, realStartWidth + middleWidth * 0.5f);
+        SetRectX(fillEndRect, realStartWidth + middleWidth + realEndWidth * 0.5f);
+    }
+
+    private float GetTotalWidth()
+    {
+        if (baseBarRect != null && baseBarRect.rect.width > 1f)
         {
-            Stop();
+            return baseBarRect.rect.width;
+        }
+
+        return totalWidth;
+    }
+
+    private void SetRectWidth(RectTransform target, float width)
+    {
+        if (target == null)
+        {
             return;
         }
 
-        audioSource.clip = track.audioClip;
-        audioSource.loop = loopCurrentClip;
-        audioSource.time = 0f;
-        audioSource.Play();
+        target.SetSizeWithCurrentAnchors(RectTransform.Axis.Horizontal, width);
     }
 
-    public void Stop()
+    private void SetRectX(RectTransform target, float x)
     {
-        if (audioSource == null)
+        if (target == null)
         {
             return;
         }
 
-        audioSource.Stop();
-        audioSource.time = 0f;
+        Vector2 position = target.anchoredPosition;
+        position.x = x;
+        target.anchoredPosition = position;
     }
 
-    private void OnTrackChanged(int index, DemoMusicTrack track)
+    private void SetFillVisible(bool visible)
     {
-        if (IsMusicPage(currentPage))
+        if (fillStartImage != null)
         {
-            PlaySelectedFromStart();
-        }
-    }
-
-    private void OnPageChanged(DemoPageId pageId)
-    {
-        currentPage = pageId;
-
-        if (IsMusicPage(pageId))
-        {
-            if (playOnMusicPageEntered)
-            {
-                if (resetOnMusicPageEntered)
-                {
-                    PlaySelectedFromStart();
-                }
-                else if (!audioSource.isPlaying)
-                {
-                    audioSource.Play();
-                }
-            }
-
-            return;
+            fillStartImage.enabled = visible;
         }
 
-        if (stopOnNonMusicPage)
+        if (fillMiddleImage != null)
         {
-            Stop();
-        }
-    }
-
-    private bool IsMusicPage(DemoPageId pageId)
-    {
-        for (int i = 0; i < musicPages.Length; i++)
-        {
-            if (musicPages[i] == pageId)
-            {
-                return true;
-            }
+            fillMiddleImage.enabled = visible;
         }
 
-        return false;
+        if (fillEndImage != null)
+        {
+            fillEndImage.enabled = visible;
+        }
     }
 
     private void ResolveReferences()
     {
-        if (musicState == null)
+        if (musicPlayer == null)
         {
-            musicState = FindFirstObjectByType<DemoMusicState>();
-        }
-
-        if (pageSwitcher == null)
-        {
-            pageSwitcher = FindFirstObjectByType<DemoPageSwitcher>();
+            musicPlayer = FindFirstObjectByType<DemoMusicPlayer>();
         }
     }
 }
