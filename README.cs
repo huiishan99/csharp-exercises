@@ -1,125 +1,179 @@
 using UnityEngine;
+using UnityEngine.EventSystems;
 using UnityEngine.UI;
 
-public class DemoMusicProgressBarView : MonoBehaviour
+[RequireComponent(typeof(RectTransform))]
+[RequireComponent(typeof(CanvasGroup))]
+[RequireComponent(typeof(Button))]
+public class DemoMusicAlbumCardView : MonoBehaviour, IPointerDownHandler, IPointerUpHandler, IPointerExitHandler
 {
-    [SerializeField] private DemoMusicPlayer musicPlayer;
+    [SerializeField] private Image cardImage;
+    [SerializeField] private Image songTitleImage;
+    [SerializeField] private GameObject flowObject;
 
-    [SerializeField] private RectTransform baseBarRect;
-    [SerializeField] private RectTransform fillStartRect;
-    [SerializeField] private RectTransform fillMiddleRect;
-    [SerializeField] private RectTransform fillEndRect;
+    private RectTransform rectTransform;
+    private CanvasGroup canvasGroup;
+    private Button button;
 
-    [SerializeField] private Image fillStartImage;
-    [SerializeField] private Image fillMiddleImage;
-    [SerializeField] private Image fillEndImage;
+    private DemoMusicCarouselView owner;
+    private DemoMusicTrack currentTrack;
 
-    [SerializeField] private float totalWidth = 520f;
-    [SerializeField] private float startWidth = 18f;
-    [SerializeField] private float endWidth = 18f;
-    [SerializeField] private bool hideFillWhenZero = true;
+    private int slotOffset;
+    private bool showImage;
+    private bool showSongTitle;
+    private bool isCenter;
+    private bool pushEnabled;
+    private bool isPressed;
+
+    public int SlotOffset
+    {
+        get { return slotOffset; }
+    }
+
+    public float CurrentDistance
+    {
+        get { return Mathf.Abs(slotOffset); }
+    }
 
     private void Awake()
     {
-        ResolveReferences();
+        rectTransform = GetComponent<RectTransform>();
+        canvasGroup = GetComponent<CanvasGroup>();
+        button = GetComponent<Button>();
+
+        button.transition = Selectable.Transition.None;
+        button.onClick.AddListener(HandleClicked);
+
+        if (cardImage == null)
+        {
+            cardImage = GetComponent<Image>();
+        }
     }
 
-    private void Update()
+    public void Initialize(DemoMusicCarouselView carousel, int offset)
     {
-        ResolveReferences();
-
-        float progress = musicPlayer == null
-            ? 0f
-            : musicPlayer.NormalizedProgress;
-
-        SetProgress(progress);
+        owner = carousel;
+        slotOffset = offset;
     }
 
-    public void SetProgress(float progress)
+    public void SetSlotOffset(int offset)
     {
-        progress = Mathf.Clamp01(progress);
+        slotOffset = offset;
+    }
 
-        float width = GetTotalWidth();
-        float fillWidth = width * progress;
+    public void SetTrack(
+        DemoMusicTrack track,
+        bool shouldShowImage,
+        bool shouldShowSongTitle,
+        bool shouldShowFlow,
+        bool shouldEnablePush
+    )
+    {
+        currentTrack = track;
+        showImage = shouldShowImage;
+        showSongTitle = shouldShowSongTitle;
+        isCenter = shouldShowFlow;
+        pushEnabled = shouldEnablePush;
 
-        bool hasProgress = fillWidth > 0.01f;
+        isPressed = false;
 
-        SetFillVisible(!hideFillWhenZero || hasProgress);
+        ApplySprite();
 
-        if (!hasProgress)
+        if (songTitleImage != null)
+        {
+            songTitleImage.gameObject.SetActive(showSongTitle && track != null && track.songTitleSprite != null);
+            songTitleImage.sprite = track == null ? null : track.songTitleSprite;
+            songTitleImage.preserveAspect = true;
+        }
+
+        if (flowObject != null)
+        {
+            flowObject.SetActive(shouldShowFlow);
+        }
+    }
+
+    public void ApplyVisual(Vector2 position, float scale, float alpha, bool canClick)
+    {
+        rectTransform.anchoredPosition = position;
+        rectTransform.localScale = Vector3.one * scale;
+
+        canvasGroup.alpha = alpha;
+        button.interactable = canClick;
+    }
+
+    public void OnPointerDown(PointerEventData eventData)
+    {
+        if (!pushEnabled || currentTrack == null || currentTrack.pushedSprite == null)
         {
             return;
         }
 
-        float realStartWidth = Mathf.Min(startWidth, fillWidth);
-        float remainingAfterStart = Mathf.Max(0f, fillWidth - realStartWidth);
-        float realEndWidth = Mathf.Min(endWidth, remainingAfterStart);
-        float middleWidth = Mathf.Max(0f, fillWidth - realStartWidth - realEndWidth);
-
-        SetRectWidth(fillStartRect, realStartWidth);
-        SetRectWidth(fillMiddleRect, middleWidth);
-        SetRectWidth(fillEndRect, realEndWidth);
-
-        SetRectX(fillStartRect, realStartWidth * 0.5f);
-        SetRectX(fillMiddleRect, realStartWidth + middleWidth * 0.5f);
-        SetRectX(fillEndRect, realStartWidth + middleWidth + realEndWidth * 0.5f);
+        isPressed = true;
+        ApplySprite();
     }
 
-    private float GetTotalWidth()
+    public void OnPointerUp(PointerEventData eventData)
     {
-        if (baseBarRect != null && baseBarRect.rect.width > 1f)
-        {
-            return baseBarRect.rect.width;
-        }
-
-        return totalWidth;
-    }
-
-    private void SetRectWidth(RectTransform target, float width)
-    {
-        if (target == null)
+        if (!isPressed)
         {
             return;
         }
 
-        target.SetSizeWithCurrentAnchors(RectTransform.Axis.Horizontal, width);
+        isPressed = false;
+        ApplySprite();
     }
 
-    private void SetRectX(RectTransform target, float x)
+    public void OnPointerExit(PointerEventData eventData)
     {
-        if (target == null)
+        if (!isPressed)
         {
             return;
         }
 
-        Vector2 position = target.anchoredPosition;
-        position.x = x;
-        target.anchoredPosition = position;
+        isPressed = false;
+        ApplySprite();
     }
 
-    private void SetFillVisible(bool visible)
+    private void HandleClicked()
     {
-        if (fillStartImage != null)
+        if (owner == null)
         {
-            fillStartImage.enabled = visible;
+            return;
         }
 
-        if (fillMiddleImage != null)
-        {
-            fillMiddleImage.enabled = visible;
-        }
-
-        if (fillEndImage != null)
-        {
-            fillEndImage.enabled = visible;
-        }
+        owner.OnCardClicked(slotOffset);
     }
 
-    private void ResolveReferences()
+    private void ApplySprite()
     {
-        if (musicPlayer == null)
+        if (cardImage == null)
         {
-            musicPlayer = FindFirstObjectByType<DemoMusicPlayer>();
+            return;
         }
+
+        bool hasTrack = currentTrack != null;
+        bool shouldShow = showImage && hasTrack;
+
+        cardImage.gameObject.SetActive(shouldShow);
+
+        if (!shouldShow)
+        {
+            return;
+        }
+
+        if (isPressed && currentTrack.pushedSprite != null)
+        {
+            cardImage.sprite = currentTrack.pushedSprite;
+        }
+        else if (isCenter && currentTrack.selectedSprite != null)
+        {
+            cardImage.sprite = currentTrack.selectedSprite;
+        }
+        else
+        {
+            cardImage.sprite = currentTrack.normalSprite;
+        }
+
+        cardImage.preserveAspect = true;
     }
 }
