@@ -1,187 +1,542 @@
+using System;
+using System.Collections;
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.UI;
 
-[RequireComponent(typeof(RectTransform))]
-[RequireComponent(typeof(CanvasGroup))]
-[RequireComponent(typeof(Button))]
-public class DemoMusicAlbumCardView : MonoBehaviour, IPointerDownHandler, IPointerUpHandler, IPointerExitHandler
+public class DemoMusicCarouselView : MonoBehaviour, IBeginDragHandler, IDragHandler, IEndDragHandler
 {
-    [SerializeField] private Image cardImage;
-    [SerializeField] private Image songTitleImage;
-
-    private RectTransform rectTransform;
-    private CanvasGroup canvasGroup;
-    private Button button;
-
-    private DemoMusicCarouselView owner;
-    private DemoMusicTrack currentTrack;
-
-    private int slotOffset;
-    private bool showImage;
-    private bool showSongTitle;
-    private bool isCenter;
-    private bool pushEnabled;
-    private bool isPressed;
-
-    public int SlotOffset
+    [Serializable]
+    private class LayerLayout
     {
-        get { return slotOffset; }
+        public float xDistance;
+        public float y;
+        public float scale;
+        public float alpha;
     }
+
+    [SerializeField] private DemoMusicState musicState;
+    [SerializeField] private DemoPageSwitcher pageSwitcher;
+
+    [SerializeField] private Button leftButton;
+    [SerializeField] private Button rightButton;
+
+    [SerializeField] private DemoMusicAlbumCardView[] cardViews = new DemoMusicAlbumCardView[9];
+
+    [SerializeField] private LayerLayout[] layerLayouts =
+    {
+        new LayerLayout { xDistance = 0f,   y = 0f,    scale = 1.00f, alpha = 1.00f },
+        new LayerLayout { xDistance = 300f, y = -30f,  scale = 0.68f, alpha = 1.00f },
+        new LayerLayout { xDistance = 500f, y = -110f, scale = 0.52f, alpha = 0.90f },
+        new LayerLayout { xDistance = 650f, y = -190f, scale = 0.38f, alpha = 0.35f },
+        new LayerLayout { xDistance = 760f, y = -260f, scale = 0.28f, alpha = 0.18f }
+    };
+
+    [SerializeField] private float imageVisibleDistance = 2.25f;
+    [SerializeField] private float songTitleVisibleDistance = 1.25f;
+    [SerializeField] private int clickableDistance = 2;
+    [SerializeField] private int pushEnabledDistance = 1;
+
+    [SerializeField] private float dragDistancePerStep = 260f;
+    [SerializeField] private float minSwipeStep = 0.35f;
+    [SerializeField] private int maxCommitStep = 6;
+    [SerializeField] private float animationDuration = 0.25f;
+
+    private float rawOffset;
+    private bool isDragging;
+    private bool isChangingTrackByAnimation;
+
+    private Vector2 dragStartPosition;
+    private Coroutine animationRoutine;
+    private Coroutine refreshRoutine;
+
+    public event Action<float, bool> CarouselMotionChanged;
 
     private void Awake()
     {
-        rectTransform = GetComponent<RectTransform>();
-        canvasGroup = GetComponent<CanvasGroup>();
-        button = GetComponent<Button>();
-
-        button.transition = Selectable.Transition.None;
-        button.onClick.AddListener(HandleClicked);
-
-        if (cardImage == null)
-        {
-            cardImage = GetComponent<Image>();
-        }
+        ResolveReferences();
+        RegisterButtons();
+        InitializeCards();
     }
 
-    public void Initialize(DemoMusicCarouselView carousel, int offset)
+    private void OnEnable()
     {
-        owner = carousel;
-        slotOffset = offset;
+        ResolveReferences();
+        SubscribeEvents();
+        ForceRefresh();
     }
 
-    public void SetSlotOffset(int offset)
+    private void OnDisable()
     {
-        slotOffset = offset;
+        UnsubscribeEvents();
+        StopAnimation();
+        StopRefreshRoutine();
+
+        isDragging = false;
+        isChangingTrackByAnimation = false;
     }
 
-    public void SetTrack(
-        DemoMusicTrack track,
-        bool shouldShowImage,
-        bool shouldShowSongTitle,
-        bool shouldUseSelectedSprite,
-        bool shouldEnablePush
-    )
+    public void MovePrevious()
     {
-        currentTrack = track;
-        showImage = shouldShowImage;
-        showSongTitle = shouldShowSongTitle;
-        isCenter = shouldUseSelectedSprite;
-        pushEnabled = shouldEnablePush;
-
-        isPressed = false;
-
-        ApplyCardSprite();
-        ApplySongTitle();
+        MoveByStep(-1);
     }
 
-    public void ApplyVisual(Vector2 position, float scale, float alpha, bool canClick)
+    public void MoveNext()
     {
-        rectTransform.anchoredPosition = position;
-        rectTransform.localScale = Vector3.one * scale;
-
-        canvasGroup.alpha = alpha;
-        button.interactable = canClick;
+        MoveByStep(1);
     }
 
-    public void OnPointerDown(PointerEventData eventData)
+    public void OnCardClicked(int slotOffset)
     {
-        if (!pushEnabled)
+        if (slotOffset == 0)
         {
             return;
         }
 
-        if (currentTrack == null || currentTrack.pushedSprite == null)
+        if (Mathf.Abs(slotOffset) > clickableDistance)
         {
             return;
         }
 
-        isPressed = true;
-        ApplyCardSprite();
+        MoveByStep(slotOffset);
     }
 
-    public void OnPointerUp(PointerEventData eventData)
+    public void OnBeginDrag(PointerEventData eventData)
     {
-        if (!isPressed)
+        if (!CanOperate())
         {
             return;
         }
 
-        isPressed = false;
-        ApplyCardSprite();
+        StopAnimation();
+
+        isDragging = true;
+        dragStartPosition = eventData.position;
     }
 
-    public void OnPointerExit(PointerEventData eventData)
+    public void OnDrag(PointerEventData eventData)
     {
-        if (!isPressed)
+        if (!isDragging)
         {
             return;
         }
 
-        isPressed = false;
-        ApplyCardSprite();
+        float dragX = eventData.position.x - dragStartPosition.x;
+        rawOffset = dragX / dragDistancePerStep;
+
+        ApplyRawOffset(rawOffset, true);
     }
 
-    private void HandleClicked()
+    public void OnEndDrag(PointerEventData eventData)
     {
-        if (owner == null)
+        if (!isDragging)
         {
             return;
         }
 
-        owner.OnCardClicked(slotOffset);
+        isDragging = false;
+
+        int step = -Mathf.RoundToInt(rawOffset);
+
+        if (Mathf.Abs(rawOffset) < minSwipeStep || step == 0)
+        {
+            AnimateBack(rawOffset);
+            return;
+        }
+
+        step = Mathf.Clamp(step, -maxCommitStep, maxCommitStep);
+        MoveByStep(step, rawOffset);
     }
 
-    private void ApplyCardSprite()
+    public void ForceRefresh()
     {
-        if (cardImage == null)
-        {
-            return;
-        }
+        StopAnimation();
 
-        bool shouldShow = showImage && currentTrack != null;
-        cardImage.gameObject.SetActive(shouldShow);
+        isDragging = false;
+        rawOffset = 0f;
 
-        if (!shouldShow)
-        {
-            return;
-        }
-
-        if (isPressed && currentTrack.pushedSprite != null)
-        {
-            cardImage.sprite = currentTrack.pushedSprite;
-        }
-        else if (isCenter && currentTrack.selectedSprite != null)
-        {
-            cardImage.sprite = currentTrack.selectedSprite;
-        }
-        else
-        {
-            cardImage.sprite = currentTrack.normalSprite;
-        }
-
-        cardImage.preserveAspect = true;
+        ApplyPreview(0, 0f, false);
     }
 
-    private void ApplySongTitle()
+    private void MoveByStep(int step)
     {
-        if (songTitleImage == null)
+        MoveByStep(step, rawOffset);
+    }
+
+    private void MoveByStep(int step, float startOffset)
+    {
+        if (!CanOperate())
         {
             return;
         }
 
-        bool shouldShow = showSongTitle
-            && currentTrack != null
-            && currentTrack.songTitleSprite != null;
+        if (step == 0)
+        {
+            AnimateBack(startOffset);
+            return;
+        }
 
-        songTitleImage.gameObject.SetActive(shouldShow);
+        step = Mathf.Clamp(step, -maxCommitStep, maxCommitStep);
 
-        if (!shouldShow)
+        float targetRawOffset = -step;
+
+        StopAnimation();
+
+        animationRoutine = StartCoroutine(
+            AnimateRawOffset(
+                startOffset,
+                targetRawOffset,
+                () =>
+                {
+                    isChangingTrackByAnimation = true;
+                    musicState.SelectRelative(step);
+                    isChangingTrackByAnimation = false;
+
+                    rawOffset = 0f;
+                    ApplyPreview(0, 0f, false);
+                }
+            )
+        );
+    }
+
+    private void RegisterButtons()
+    {
+        if (leftButton != null)
+        {
+            leftButton.onClick.RemoveListener(MovePrevious);
+            leftButton.onClick.AddListener(MovePrevious);
+        }
+
+        if (rightButton != null)
+        {
+            rightButton.onClick.RemoveListener(MoveNext);
+            rightButton.onClick.AddListener(MoveNext);
+        }
+    }
+
+    private void InitializeCards()
+    {
+        if (cardViews == null)
         {
             return;
         }
 
-        songTitleImage.sprite = currentTrack.songTitleSprite;
-        songTitleImage.preserveAspect = true;
+        int count = cardViews.Length;
+
+        for (int i = 0; i < count; i++)
+        {
+            DemoMusicAlbumCardView card = cardViews[i];
+
+            if (card == null)
+            {
+                continue;
+            }
+
+            int slotOffset = GetSlotOffset(i, count);
+            card.Initialize(this, slotOffset);
+        }
+    }
+
+    private void ApplyRawOffset(float offset, bool moving)
+    {
+        int previewStep = -Mathf.RoundToInt(offset);
+        float residualOffset = offset + previewStep;
+
+        ApplyPreview(previewStep, residualOffset, moving);
+    }
+
+    private void ApplyPreview(int previewStep, float residualOffset, bool moving)
+    {
+        if (musicState == null || cardViews == null)
+        {
+            return;
+        }
+
+        int count = cardViews.Length;
+
+        for (int i = 0; i < count; i++)
+        {
+            DemoMusicAlbumCardView card = cardViews[i];
+
+            if (card == null)
+            {
+                continue;
+            }
+
+            int slotOffset = GetSlotOffset(i, count);
+            float visualIndex = slotOffset + residualOffset;
+            float visualDistance = Mathf.Abs(visualIndex);
+
+            int trackOffset = previewStep + slotOffset;
+
+            bool showImage = visualDistance <= imageVisibleDistance;
+            bool showSongTitle = visualDistance <= songTitleVisibleDistance;
+            bool useSelectedSprite = visualDistance < 0.55f;
+            bool enablePush = Mathf.Abs(slotOffset) <= pushEnabledDistance && !moving;
+
+            Vector2 position = CalculatePosition(visualIndex);
+            float scale = CalculateScale(visualIndex);
+            float alpha = CalculateAlpha(visualIndex);
+
+            bool canClick = !moving
+                && animationRoutine == null
+                && Mathf.Abs(residualOffset) < 0.05f
+                && Mathf.Abs(slotOffset) <= clickableDistance;
+
+            card.Initialize(this, slotOffset);
+            card.SetSlotOffset(slotOffset);
+            card.SetTrack(
+                musicState.GetTrackByOffset(trackOffset),
+                showImage,
+                showSongTitle,
+                useSelectedSprite,
+                enablePush
+            );
+
+            card.ApplyVisual(position, scale, alpha, canClick);
+        }
+
+        UpdateSiblingOrder(residualOffset);
+        CarouselMotionChanged?.Invoke(residualOffset, moving);
+    }
+
+    private Vector2 CalculatePosition(float visualIndex)
+    {
+        float sign = Mathf.Sign(visualIndex);
+        float distance = Mathf.Abs(visualIndex);
+
+        LayerLayout layout = GetInterpolatedLayout(distance);
+
+        float x = layout.xDistance * sign;
+        float y = layout.y;
+
+        return new Vector2(x, y);
+    }
+
+    private float CalculateScale(float visualIndex)
+    {
+        return GetInterpolatedLayout(Mathf.Abs(visualIndex)).scale;
+    }
+
+    private float CalculateAlpha(float visualIndex)
+    {
+        return GetInterpolatedLayout(Mathf.Abs(visualIndex)).alpha;
+    }
+
+    private LayerLayout GetInterpolatedLayout(float distance)
+    {
+        if (layerLayouts == null || layerLayouts.Length == 0)
+        {
+            return new LayerLayout
+            {
+                xDistance = 0f,
+                y = 0f,
+                scale = 1f,
+                alpha = 1f
+            };
+        }
+
+        float maxIndex = layerLayouts.Length - 1;
+        float clampedDistance = Mathf.Clamp(distance, 0f, maxIndex);
+
+        int lowerIndex = Mathf.FloorToInt(clampedDistance);
+        int upperIndex = Mathf.Min(lowerIndex + 1, layerLayouts.Length - 1);
+        float rate = clampedDistance - lowerIndex;
+
+        LayerLayout lower = layerLayouts[lowerIndex];
+        LayerLayout upper = layerLayouts[upperIndex];
+
+        return new LayerLayout
+        {
+            xDistance = Mathf.Lerp(lower.xDistance, upper.xDistance, rate),
+            y = Mathf.Lerp(lower.y, upper.y, rate),
+            scale = Mathf.Lerp(lower.scale, upper.scale, rate),
+            alpha = Mathf.Lerp(lower.alpha, upper.alpha, rate)
+        };
+    }
+
+    private void UpdateSiblingOrder(float residualOffset)
+    {
+        List<DemoMusicAlbumCardView> validCards = new List<DemoMusicAlbumCardView>();
+
+        for (int i = 0; i < cardViews.Length; i++)
+        {
+            if (cardViews[i] != null)
+            {
+                validCards.Add(cardViews[i]);
+            }
+        }
+
+        validCards.Sort(
+            (a, b) =>
+            {
+                float distanceA = Mathf.Abs(a.SlotOffset + residualOffset);
+                float distanceB = Mathf.Abs(b.SlotOffset + residualOffset);
+
+                return distanceB.CompareTo(distanceA);
+            }
+        );
+
+        for (int i = 0; i < validCards.Count; i++)
+        {
+            validCards[i].transform.SetSiblingIndex(i);
+        }
+    }
+
+    private int GetSlotOffset(int cardIndex, int cardCount)
+    {
+        int centerIndex = cardCount / 2;
+        return cardIndex - centerIndex;
+    }
+
+    private void OnTrackChanged(int index, DemoMusicTrack track)
+    {
+        if (isChangingTrackByAnimation)
+        {
+            return;
+        }
+
+        if (isDragging || animationRoutine != null)
+        {
+            return;
+        }
+
+        ForceRefresh();
+    }
+
+    private void OnPageChanged(DemoPageId pageId)
+    {
+        RequestRefreshNextFrame();
+    }
+
+    private void RequestRefreshNextFrame()
+    {
+        if (!isActiveAndEnabled)
+        {
+            return;
+        }
+
+        StopRefreshRoutine();
+        refreshRoutine = StartCoroutine(RefreshNextFrame());
+    }
+
+    private IEnumerator RefreshNextFrame()
+    {
+        yield return null;
+
+        refreshRoutine = null;
+        ForceRefresh();
+    }
+
+    private IEnumerator AnimateRawOffset(float from, float to, Action onComplete)
+    {
+        float elapsed = 0f;
+
+        while (elapsed < animationDuration)
+        {
+            elapsed += Time.deltaTime;
+
+            float rate = Mathf.Clamp01(elapsed / animationDuration);
+            float smoothRate = Mathf.SmoothStep(0f, 1f, rate);
+
+            rawOffset = Mathf.Lerp(from, to, smoothRate);
+            ApplyRawOffset(rawOffset, true);
+
+            yield return null;
+        }
+
+        rawOffset = to;
+        ApplyRawOffset(rawOffset, true);
+
+        animationRoutine = null;
+        onComplete?.Invoke();
+    }
+
+    private void AnimateBack(float startOffset)
+    {
+        StopAnimation();
+
+        animationRoutine = StartCoroutine(
+            AnimateRawOffset(
+                startOffset,
+                0f,
+                () =>
+                {
+                    rawOffset = 0f;
+                    ApplyPreview(0, 0f, false);
+                }
+            )
+        );
+    }
+
+    private bool CanOperate()
+    {
+        return musicState != null
+            && musicState.TrackCount > 0
+            && animationRoutine == null;
+    }
+
+    private void ResolveReferences()
+    {
+        if (musicState == null)
+        {
+            musicState = FindFirstObjectByType<DemoMusicState>();
+        }
+
+        if (pageSwitcher == null)
+        {
+            pageSwitcher = FindFirstObjectByType<DemoPageSwitcher>();
+        }
+    }
+
+    private void SubscribeEvents()
+    {
+        if (musicState != null)
+        {
+            musicState.TrackChanged -= OnTrackChanged;
+            musicState.TrackChanged += OnTrackChanged;
+        }
+
+        if (pageSwitcher != null)
+        {
+            pageSwitcher.PageChanged -= OnPageChanged;
+            pageSwitcher.PageChanged += OnPageChanged;
+        }
+    }
+
+    private void UnsubscribeEvents()
+    {
+        if (musicState != null)
+        {
+            musicState.TrackChanged -= OnTrackChanged;
+        }
+
+        if (pageSwitcher != null)
+        {
+            pageSwitcher.PageChanged -= OnPageChanged;
+        }
+    }
+
+    private void StopAnimation()
+    {
+        if (animationRoutine == null)
+        {
+            return;
+        }
+
+        StopCoroutine(animationRoutine);
+        animationRoutine = null;
+    }
+
+    private void StopRefreshRoutine()
+    {
+        if (refreshRoutine == null)
+        {
+            return;
+        }
+
+        StopCoroutine(refreshRoutine);
+        refreshRoutine = null;
     }
 }
