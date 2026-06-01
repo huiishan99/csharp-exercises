@@ -1,102 +1,96 @@
 using UnityEngine;
+using UnityEngine.UI;
 
-[RequireComponent(typeof(RectTransform))]
-public class DemoMusicScrollLinkedView : MonoBehaviour
+[RequireComponent(typeof(Image))]
+public class DemoSpriteSequenceAnimator : MonoBehaviour
 {
-    [SerializeField] private DemoMusicCarouselView carouselView;
-    [SerializeField] private CanvasGroup canvasGroup;
+    [SerializeField] private Sprite[] frames;
+    [SerializeField] private float framesPerSecond = 24f;
+    [SerializeField] private bool playOnEnable = true;
+    [SerializeField] private bool loop = true;
 
-    [SerializeField] private float followX = 90f;
-    [SerializeField] private float followY = -18f;
-    [SerializeField] private float scaleReduction = 0.05f;
-    [SerializeField] private float alphaReduction = 0.15f;
-
-    private RectTransform rectTransform;
-    private Vector2 initialPosition;
-    private Vector3 initialScale;
+    private Image targetImage;
+    private float timer;
+    private int currentFrame;
+    private bool isPlaying;
 
     private void Awake()
     {
-        rectTransform = GetComponent<RectTransform>();
-        initialPosition = rectTransform.anchoredPosition;
-        initialScale = rectTransform.localScale;
-
-        if (canvasGroup == null)
-        {
-            canvasGroup = GetComponent<CanvasGroup>();
-        }
-
-        ResolveReferences();
+        targetImage = GetComponent<Image>();
     }
 
     private void OnEnable()
     {
-        ResolveReferences();
-
-        if (carouselView != null)
+        if (playOnEnable)
         {
-            carouselView.CarouselMotionChanged -= OnCarouselMotionChanged;
-            carouselView.CarouselMotionChanged += OnCarouselMotionChanged;
+            PlayFromStart();
         }
-
-        ResetVisual();
     }
 
     private void OnDisable()
     {
-        if (carouselView != null)
-        {
-            carouselView.CarouselMotionChanged -= OnCarouselMotionChanged;
-        }
-
-        ResetVisual();
+        isPlaying = false;
     }
 
-    private void OnCarouselMotionChanged(float residualOffset, bool isMoving)
+    private void Update()
     {
-        float amount = Mathf.Clamp01(Mathf.Abs(residualOffset) * 2f);
-
-        Vector2 nextPosition = initialPosition;
-        nextPosition.x += residualOffset * followX;
-        nextPosition.y += amount * followY;
-
-        rectTransform.anchoredPosition = nextPosition;
-
-        float scale = 1f - amount * scaleReduction;
-        rectTransform.localScale = initialScale * scale;
-
-        if (canvasGroup != null)
-        {
-            canvasGroup.alpha = 1f - amount * alphaReduction;
-        }
-    }
-
-    private void ResetVisual()
-    {
-        if (rectTransform == null)
+        if (!isPlaying || frames == null || frames.Length == 0)
         {
             return;
         }
 
-        rectTransform.anchoredPosition = initialPosition;
-        rectTransform.localScale = initialScale;
+        timer += Time.deltaTime;
 
-        if (canvasGroup != null)
+        float frameDuration = 1f / framesPerSecond;
+
+        while (timer >= frameDuration)
         {
-            canvasGroup.alpha = 1f;
+            timer -= frameDuration;
+            GoToNextFrame();
         }
     }
 
-    private void ResolveReferences()
+    public void PlayFromStart()
     {
-        if (carouselView == null)
+        currentFrame = 0;
+        timer = 0f;
+        isPlaying = true;
+        ApplyFrame();
+    }
+
+    public void Stop()
+    {
+        isPlaying = false;
+    }
+
+    private void GoToNextFrame()
+    {
+        currentFrame++;
+
+        if (currentFrame >= frames.Length)
         {
-            carouselView = GetComponentInParent<DemoMusicCarouselView>();
+            if (loop)
+            {
+                currentFrame = 0;
+            }
+            else
+            {
+                currentFrame = frames.Length - 1;
+                isPlaying = false;
+            }
         }
 
-        if (carouselView == null)
+        ApplyFrame();
+    }
+
+    private void ApplyFrame()
+    {
+        if (targetImage == null || frames == null || frames.Length == 0)
         {
-            carouselView = FindFirstObjectByType<DemoMusicCarouselView>();
+            return;
         }
+
+        targetImage.sprite = frames[currentFrame];
+        targetImage.preserveAspect = true;
     }
 }
