@@ -1,84 +1,181 @@
 using UnityEngine;
 
-public class DemoSpeakerState : MonoBehaviour
+#if ENABLE_INPUT_SYSTEM
+using UnityEngine.InputSystem;
+#endif
+
+public class DemoSpeakerKeyboardInput : MonoBehaviour
 {
-    [SerializeField] private bool leftSpeakerOn = true;
-    [SerializeField] private bool rightSpeakerOn = true;
+    [SerializeField] private DemoSpeakerState speakerState;
 
-    [SerializeField] private float volume = 0.8f;
-    [SerializeField] private float volumeStep = 0.1f;
-
-    public bool LeftSpeakerOn
+    private void Awake()
     {
-        get { return leftSpeakerOn; }
+        if (speakerState == null)
+        {
+            speakerState = GetComponent<DemoSpeakerState>();
+        }
+
+        if (speakerState == null)
+        {
+            speakerState = FindFirstObjectByType<DemoSpeakerState>();
+        }
     }
 
-    public bool RightSpeakerOn
+    private void Update()
     {
-        get { return rightSpeakerOn; }
+        if (speakerState == null)
+        {
+            return;
+        }
+
+        if (IsLeftSpeakerKeyDown())
+        {
+            speakerState.ToggleLeftSpeaker();
+            return;
+        }
+
+        if (IsRightSpeakerKeyDown())
+        {
+            speakerState.ToggleRightSpeaker();
+            return;
+        }
+
+        if (IsBothSpeakerKeyDown())
+        {
+            speakerState.ToggleBothSpeakers();
+            return;
+        }
+
+        if (IsVolumeDownKeyDown())
+        {
+            speakerState.DecreaseVolume();
+            return;
+        }
+
+        if (IsVolumeUpKeyDown())
+        {
+            speakerState.IncreaseVolume();
+        }
     }
 
-    public float Volume
+    private bool IsLeftSpeakerKeyDown()
     {
-        get { return volume; }
+#if ENABLE_INPUT_SYSTEM
+        if (Keyboard.current != null && Keyboard.current.digit1Key.wasPressedThisFrame)
+        {
+            return true;
+        }
+#endif
+
+#if ENABLE_LEGACY_INPUT_MANAGER
+        if (Input.GetKeyDown(KeyCode.Alpha1))
+        {
+            return true;
+        }
+#endif
+
+        return false;
     }
 
-    private void Start()
+    private bool IsRightSpeakerKeyDown()
     {
-        LogState("Initial Speaker State");
+#if ENABLE_INPUT_SYSTEM
+        if (Keyboard.current != null && Keyboard.current.digit2Key.wasPressedThisFrame)
+        {
+            return true;
+        }
+#endif
+
+#if ENABLE_LEGACY_INPUT_MANAGER
+        if (Input.GetKeyDown(KeyCode.Alpha2))
+        {
+            return true;
+        }
+#endif
+
+        return false;
     }
 
-    public void ToggleLeftSpeaker()
+    private bool IsBothSpeakerKeyDown()
     {
-        leftSpeakerOn = !leftSpeakerOn;
-        LogState("Toggle Left Speaker");
+#if ENABLE_INPUT_SYSTEM
+        if (Keyboard.current != null && Keyboard.current.digit3Key.wasPressedThisFrame)
+        {
+            return true;
+        }
+#endif
+
+#if ENABLE_LEGACY_INPUT_MANAGER
+        if (Input.GetKeyDown(KeyCode.Alpha3))
+        {
+            return true;
+        }
+#endif
+
+        return false;
     }
 
-    public void ToggleRightSpeaker()
+    private bool IsVolumeDownKeyDown()
     {
-        rightSpeakerOn = !rightSpeakerOn;
-        LogState("Toggle Right Speaker");
+#if ENABLE_INPUT_SYSTEM
+        if (Keyboard.current != null)
+        {
+            if (Keyboard.current.commaKey.wasPressedThisFrame)
+            {
+                return true;
+            }
+
+            if (Keyboard.current.downArrowKey.wasPressedThisFrame)
+            {
+                return true;
+            }
+        }
+#endif
+
+#if ENABLE_LEGACY_INPUT_MANAGER
+        if (Input.GetKeyDown(KeyCode.Comma))
+        {
+            return true;
+        }
+
+        if (Input.GetKeyDown(KeyCode.DownArrow))
+        {
+            return true;
+        }
+#endif
+
+        return false;
     }
 
-    public void ToggleBothSpeakers()
+    private bool IsVolumeUpKeyDown()
     {
-        bool shouldTurnOn = !(leftSpeakerOn && rightSpeakerOn);
+#if ENABLE_INPUT_SYSTEM
+        if (Keyboard.current != null)
+        {
+            if (Keyboard.current.periodKey.wasPressedThisFrame)
+            {
+                return true;
+            }
 
-        leftSpeakerOn = shouldTurnOn;
-        rightSpeakerOn = shouldTurnOn;
+            if (Keyboard.current.upArrowKey.wasPressedThisFrame)
+            {
+                return true;
+            }
+        }
+#endif
 
-        LogState("Toggle Both Speakers");
-    }
+#if ENABLE_LEGACY_INPUT_MANAGER
+        if (Input.GetKeyDown(KeyCode.Period))
+        {
+            return true;
+        }
 
-    public void IncreaseVolume()
-    {
-        volume = Mathf.Clamp01(volume + volumeStep);
-        LogState("Volume Up");
-    }
+        if (Input.GetKeyDown(KeyCode.UpArrow))
+        {
+            return true;
+        }
+#endif
 
-    public void DecreaseVolume()
-    {
-        volume = Mathf.Clamp01(volume - volumeStep);
-        LogState("Volume Down");
-    }
-
-    private void LogState(string actionName)
-    {
-        Debug.Log(
-            "[Speaker] "
-            + actionName
-            + " | Left: "
-            + ToOnOff(leftSpeakerOn)
-            + " | Right: "
-            + ToOnOff(rightSpeakerOn)
-            + " | Volume: "
-            + Mathf.RoundToInt(volume * 100f)
-            + "%"
-        );
-    }
-
-    private string ToOnOff(bool value)
-    {
-        return value ? "ON" : "OFF";
+        return false;
     }
 }
