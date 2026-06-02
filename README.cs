@@ -1,55 +1,31 @@
-using UnityEngine;
-
-#if ENABLE_INPUT_SYSTEM
-using UnityEngine.InputSystem;
-#endif
-
-public class DemoAudioOutputKeyboardInput : MonoBehaviour
+[ComImport]
+[Guid("A95664D2-9614-4F35-A746-DE8DB63617E6")]
+[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+private interface IMMDeviceEnumerator
 {
-    [SerializeField] private DemoWindowsAudioOutputSwitcher outputSwitcher;
+    [PreserveSig]
+    int EnumAudioEndpoints(
+        EDataFlow dataFlow,
+        DEVICE_STATE stateMask,
+        out IMMDeviceCollection devices
+    );
 
-    private void Awake()
-    {
-        if (outputSwitcher == null)
-        {
-            outputSwitcher = GetComponent<DemoWindowsAudioOutputSwitcher>();
-        }
+    [PreserveSig]
+    int GetDefaultAudioEndpoint(
+        EDataFlow dataFlow,
+        ERole role,
+        out IMMDevice endpoint
+    );
 
-        if (outputSwitcher == null)
-        {
-            outputSwitcher = FindFirstObjectByType<DemoWindowsAudioOutputSwitcher>();
-        }
-    }
+    [PreserveSig]
+    int GetDevice(
+        [MarshalAs(UnmanagedType.LPWStr)] string id,
+        out IMMDevice device
+    );
 
-    private void Update()
-    {
-        if (outputSwitcher == null)
-        {
-            return;
-        }
+    [PreserveSig]
+    int RegisterEndpointNotificationCallback(IntPtr client);
 
-        if (IsSwitchDeviceKeyDown())
-        {
-            outputSwitcher.SwitchToNextDevice();
-        }
-    }
-
-    private bool IsSwitchDeviceKeyDown()
-    {
-#if ENABLE_INPUT_SYSTEM
-        if (Keyboard.current != null && Keyboard.current.zKey.wasPressedThisFrame)
-        {
-            return true;
-        }
-#endif
-
-#if ENABLE_LEGACY_INPUT_MANAGER
-        if (Input.GetKeyDown(KeyCode.Z))
-        {
-            return true;
-        }
-#endif
-
-        return false;
-    }
+    [PreserveSig]
+    int UnregisterEndpointNotificationCallback(IntPtr client);
 }
