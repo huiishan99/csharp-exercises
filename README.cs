@@ -1,89 +1,97 @@
-using System;
 using UnityEngine;
 
-public class DemoSpeakerState : MonoBehaviour
+public class DemoSpeakerAudioApplier : MonoBehaviour
 {
-    [SerializeField] private bool leftSpeakerOn = true;
-    [SerializeField] private bool rightSpeakerOn = true;
+    [SerializeField] private DemoSpeakerState speakerState;
+    [SerializeField] private AudioSource[] targetAudioSources;
 
-    [SerializeField] private float volume = 0.8f;
-    [SerializeField] private float volumeStep = 0.1f;
+    [SerializeField] private bool force2DAudio = true;
 
-    public event Action SpeakerStateChanged;
-
-    public bool LeftSpeakerOn
+    private void Awake()
     {
-        get { return leftSpeakerOn; }
+        ResolveReferences();
     }
 
-    public bool RightSpeakerOn
+    private void OnEnable()
     {
-        get { return rightSpeakerOn; }
+        ResolveReferences();
+
+        if (speakerState != null)
+        {
+            speakerState.SpeakerStateChanged -= ApplySpeakerState;
+            speakerState.SpeakerStateChanged += ApplySpeakerState;
+        }
+
+        ApplySpeakerState();
     }
 
-    public float Volume
+    private void OnDisable()
     {
-        get { return volume; }
+        if (speakerState != null)
+        {
+            speakerState.SpeakerStateChanged -= ApplySpeakerState;
+        }
     }
 
-    private void Start()
+    public void ApplySpeakerState()
     {
-        NotifyChanged("Initial Speaker State");
+        if (speakerState == null || targetAudioSources == null)
+        {
+            return;
+        }
+
+        for (int i = 0; i < targetAudioSources.Length; i++)
+        {
+            AudioSource audioSource = targetAudioSources[i];
+
+            if (audioSource == null)
+            {
+                continue;
+            }
+
+            ApplyToAudioSource(audioSource);
+        }
     }
 
-    public void ToggleLeftSpeaker()
+    private void ApplyToAudioSource(AudioSource audioSource)
     {
-        leftSpeakerOn = !leftSpeakerOn;
-        NotifyChanged("Toggle Left Speaker");
+        if (force2DAudio)
+        {
+            audioSource.spatialBlend = 0f;
+        }
+
+        bool leftOn = speakerState.LeftSpeakerOn;
+        bool rightOn = speakerState.RightSpeakerOn;
+
+        if (!leftOn && !rightOn)
+        {
+            audioSource.volume = 0f;
+            audioSource.panStereo = 0f;
+            return;
+        }
+
+        audioSource.volume = speakerState.Volume;
+
+        if (leftOn && rightOn)
+        {
+            audioSource.panStereo = 0f;
+            return;
+        }
+
+        if (leftOn)
+        {
+            audioSource.panStereo = -1f;
+            return;
+        }
+
+        audioSource.panStereo = 1f;
     }
 
-    public void ToggleRightSpeaker()
+    private void ResolveReferences()
     {
-        rightSpeakerOn = !rightSpeakerOn;
-        NotifyChanged("Toggle Right Speaker");
-    }
-
-    public void ToggleBothSpeakers()
-    {
-        bool shouldTurnOn = !(leftSpeakerOn && rightSpeakerOn);
-
-        leftSpeakerOn = shouldTurnOn;
-        rightSpeakerOn = shouldTurnOn;
-
-        NotifyChanged("Toggle Both Speakers");
-    }
-
-    public void IncreaseVolume()
-    {
-        volume = Mathf.Clamp01(volume + volumeStep);
-        NotifyChanged("Volume Up");
-    }
-
-    public void DecreaseVolume()
-    {
-        volume = Mathf.Clamp01(volume - volumeStep);
-        NotifyChanged("Volume Down");
-    }
-
-    private void NotifyChanged(string actionName)
-    {
-        Debug.Log(
-            "[Speaker] "
-            + actionName
-            + " | Left: "
-            + ToOnOff(leftSpeakerOn)
-            + " | Right: "
-            + ToOnOff(rightSpeakerOn)
-            + " | Volume: "
-            + Mathf.RoundToInt(volume * 100f)
-            + "%"
-        );
-
-        SpeakerStateChanged?.Invoke();
-    }
-
-    private string ToOnOff(bool value)
-    {
-        return value ? "ON" : "OFF";
+        if (speakerState == null)
+        {
+            speakerState = FindFirstObjectByType<DemoSpeakerState>();
+        }
     }
 }
