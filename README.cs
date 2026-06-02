@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-Add-Type -TypeDefinition @"
+Add-Type -Language CSharp -TypeDefinition @'
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
@@ -290,7 +290,8 @@ public static class AudioOutputSwitcher
                 return 1;
             }
 
-            collection.GetCount(out uint count);
+            uint count = 0;
+            collection.GetCount(out count);
 
             List<AudioOutputDeviceData> devices = new List<AudioOutputDeviceData>();
 
@@ -312,13 +313,10 @@ public static class AudioOutputSwitcher
 
                     if (!string.IsNullOrEmpty(id))
                     {
-                        devices.Add(
-                            new AudioOutputDeviceData
-                            {
-                                Id = id,
-                                Name = name
-                            }
-                        );
+                        AudioOutputDeviceData data = new AudioOutputDeviceData();
+                        data.Id = id;
+                        data.Name = name;
+                        devices.Add(data);
                     }
                 }
                 finally
@@ -346,13 +344,13 @@ public static class AudioOutputSwitcher
                     currentIndex = i;
                 }
 
-                Console.WriteLine(
-                    "[AudioOutputPS] "
+                string line = "[AudioOutputPS] "
                     + i
                     + ": "
                     + devices[i].Name
-                    + (isCurrent ? " *Current" : "")
-                );
+                    + (isCurrent ? " *Current" : "");
+
+                Console.WriteLine(line);
             }
 
             int nextIndex = currentIndex < 0
@@ -447,7 +445,9 @@ public static class AudioOutputSwitcher
             }
 
             AudioPROPERTYKEY key = PKEY_Device_FriendlyName;
-            int valueResult = propertyStore.GetValue(ref key, out AudioPROPVARIANT value);
+            AudioPROPVARIANT value = new AudioPROPVARIANT();
+
+            int valueResult = propertyStore.GetValue(ref key, out value);
 
             if (valueResult != 0)
             {
@@ -492,7 +492,7 @@ public static class AudioOutputSwitcher
         return "0x" + unchecked((uint)value).ToString("X8");
     }
 }
-"@
+'@
 
 $result = [AudioOutputSwitcher]::SwitchToNextOutputDevice()
 exit $result
