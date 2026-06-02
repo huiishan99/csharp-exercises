@@ -1,96 +1,84 @@
 using UnityEngine;
-using UnityEngine.UI;
 
-[RequireComponent(typeof(Image))]
-public class DemoSpriteSequenceAnimator : MonoBehaviour
+public class DemoSpeakerState : MonoBehaviour
 {
-    [SerializeField] private Sprite[] frames;
-    [SerializeField] private float framesPerSecond = 24f;
-    [SerializeField] private bool playOnEnable = true;
-    [SerializeField] private bool loop = true;
+    [SerializeField] private bool leftSpeakerOn = true;
+    [SerializeField] private bool rightSpeakerOn = true;
 
-    private Image targetImage;
-    private float timer;
-    private int currentFrame;
-    private bool isPlaying;
+    [SerializeField] private float volume = 0.8f;
+    [SerializeField] private float volumeStep = 0.1f;
 
-    private void Awake()
+    public bool LeftSpeakerOn
     {
-        targetImage = GetComponent<Image>();
+        get { return leftSpeakerOn; }
     }
 
-    private void OnEnable()
+    public bool RightSpeakerOn
     {
-        if (playOnEnable)
-        {
-            PlayFromStart();
-        }
+        get { return rightSpeakerOn; }
     }
 
-    private void OnDisable()
+    public float Volume
     {
-        isPlaying = false;
+        get { return volume; }
     }
 
-    private void Update()
+    private void Start()
     {
-        if (!isPlaying || frames == null || frames.Length == 0)
-        {
-            return;
-        }
-
-        timer += Time.deltaTime;
-
-        float frameDuration = 1f / framesPerSecond;
-
-        while (timer >= frameDuration)
-        {
-            timer -= frameDuration;
-            GoToNextFrame();
-        }
+        LogState("Initial Speaker State");
     }
 
-    public void PlayFromStart()
+    public void ToggleLeftSpeaker()
     {
-        currentFrame = 0;
-        timer = 0f;
-        isPlaying = true;
-        ApplyFrame();
+        leftSpeakerOn = !leftSpeakerOn;
+        LogState("Toggle Left Speaker");
     }
 
-    public void Stop()
+    public void ToggleRightSpeaker()
     {
-        isPlaying = false;
+        rightSpeakerOn = !rightSpeakerOn;
+        LogState("Toggle Right Speaker");
     }
 
-    private void GoToNextFrame()
+    public void ToggleBothSpeakers()
     {
-        currentFrame++;
+        bool shouldTurnOn = !(leftSpeakerOn && rightSpeakerOn);
 
-        if (currentFrame >= frames.Length)
-        {
-            if (loop)
-            {
-                currentFrame = 0;
-            }
-            else
-            {
-                currentFrame = frames.Length - 1;
-                isPlaying = false;
-            }
-        }
+        leftSpeakerOn = shouldTurnOn;
+        rightSpeakerOn = shouldTurnOn;
 
-        ApplyFrame();
+        LogState("Toggle Both Speakers");
     }
 
-    private void ApplyFrame()
+    public void IncreaseVolume()
     {
-        if (targetImage == null || frames == null || frames.Length == 0)
-        {
-            return;
-        }
+        volume = Mathf.Clamp01(volume + volumeStep);
+        LogState("Volume Up");
+    }
 
-        targetImage.sprite = frames[currentFrame];
-        targetImage.preserveAspect = true;
+    public void DecreaseVolume()
+    {
+        volume = Mathf.Clamp01(volume - volumeStep);
+        LogState("Volume Down");
+    }
+
+    private void LogState(string actionName)
+    {
+        Debug.Log(
+            "[Speaker] "
+            + actionName
+            + " | Left: "
+            + ToOnOff(leftSpeakerOn)
+            + " | Right: "
+            + ToOnOff(rightSpeakerOn)
+            + " | Volume: "
+            + Mathf.RoundToInt(volume * 100f)
+            + "%"
+        );
+    }
+
+    private string ToOnOff(bool value)
+    {
+        return value ? "ON" : "OFF";
     }
 }
