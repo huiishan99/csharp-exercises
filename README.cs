@@ -1,121 +1,58 @@
 using System;
 using UnityEngine;
 
-public static class OledTouchJsonParser
+public class OledTouchRouter : MonoBehaviour
 {
-    [Serializable]
-    private class OledTouchJsonPayload
+    [SerializeField] private bool logRawJson = true;
+    [SerializeField] private bool logParsedEvent = true;
+
+    public event Action<OledTouchEvent> TouchReceived;
+    public event Action<OledTouchEvent> DriverTouchReceived;
+    public event Action<OledTouchEvent> PassengerTouchReceived;
+
+    public void ReceiveRawJson(string rawJson)
     {
-        public int x;
-        public int y;
-        public string event_type;
-        public string source;
+        if (logRawJson)
+        {
+            Debug.Log("[OLED Touch Raw] " + rawJson);
+        }
+
+        if (!OledTouchJsonParser.TryParse(
+                rawJson,
+                out OledTouchEvent touchEvent,
+                out string errorMessage
+            ))
+        {
+            Debug.LogWarning("[OLED Touch] Parse failed: " + errorMessage + " | Raw: " + rawJson);
+            return;
+        }
+
+        RouteTouchEvent(touchEvent);
     }
 
-    public static bool TryParse(
-        string json,
-        out OledTouchEvent touchEvent,
-        out string errorMessage
-    )
+    public void RouteTouchEvent(OledTouchEvent touchEvent)
     {
-        touchEvent = null;
-        errorMessage = "";
-
-        if (string.IsNullOrWhiteSpace(json))
+        if (touchEvent == null)
         {
-            errorMessage = "Json is empty.";
-            return false;
+            return;
         }
 
-        OledTouchJsonPayload payload;
-
-        try
+        if (logParsedEvent)
         {
-            payload = JsonUtility.FromJson<OledTouchJsonPayload>(json);
-        }
-        catch (Exception exception)
-        {
-            errorMessage = "Json parse exception: " + exception.Message;
-            return false;
+            Debug.Log("[OLED Touch] " + touchEvent);
         }
 
-        if (payload == null)
+        TouchReceived?.Invoke(touchEvent);
+
+        if (touchEvent.Source == OledTouchSource.Driver)
         {
-            errorMessage = "Json payload is null.";
-            return false;
+            DriverTouchReceived?.Invoke(touchEvent);
+            return;
         }
 
-        OledTouchEventType eventType = ParseEventType(payload.event_type);
-        OledTouchSource source = ParseSource(payload.source);
-
-        if (eventType == OledTouchEventType.Unknown)
+        if (touchEvent.Source == OledTouchSource.Passenger)
         {
-            errorMessage = "Unknown event_type: " + payload.event_type;
-            return false;
+            PassengerTouchReceived?.Invoke(touchEvent);
         }
-
-        if (source == OledTouchSource.Unknown)
-        {
-            errorMessage = "Unknown source: " + payload.source;
-            return false;
-        }
-
-        touchEvent = new OledTouchEvent(
-            payload.x,
-            payload.y,
-            eventType,
-            source
-        );
-
-        return true;
-    }
-
-    private static OledTouchEventType ParseEventType(string value)
-    {
-        if (string.IsNullOrEmpty(value))
-        {
-            return OledTouchEventType.Unknown;
-        }
-
-        string normalized = value.Trim().ToLowerInvariant();
-
-        if (normalized == "down")
-        {
-            return OledTouchEventType.Down;
-        }
-
-        if (normalized == "move")
-        {
-            return OledTouchEventType.Move;
-        }
-
-        if (normalized == "up")
-        {
-            return OledTouchEventType.Up;
-        }
-
-        return OledTouchEventType.Unknown;
-    }
-
-    private static OledTouchSource ParseSource(string value)
-    {
-        if (string.IsNullOrEmpty(value))
-        {
-            return OledTouchSource.Unknown;
-        }
-
-        string normalized = value.Trim().ToLowerInvariant();
-
-        if (normalized == "driver")
-        {
-            return OledTouchSource.Driver;
-        }
-
-        if (normalized == "passenger")
-        {
-            return OledTouchSource.Passenger;
-        }
-
-        return OledTouchSource.Unknown;
     }
 }
