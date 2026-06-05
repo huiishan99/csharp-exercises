@@ -1,7 +1,6 @@
-public enum OledTouchEventType
+public enum OledTouchSource
 {
     Unknown,
-    Down,
-    Move,
-    Up
+    Driver,
+    Passenger
 }
