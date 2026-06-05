@@ -1,58 +1,258 @@
 using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Net.Sockets;
+using System.Text;
+using System.Threading;
 using UnityEngine;
 
-public class OledTouchRouter : MonoBehaviour
+public class OledTouchTcpClientService : MonoBehaviour
 {
-    [SerializeField] private bool logRawJson = true;
-    [SerializeField] private bool logParsedEvent = true;
+    [Header("Connection Settings")]
+    [SerializeField] private string host = "127.0.0.1";
+    [SerializeField] private int port = 5000;
+    [SerializeField] private float reconnectIntervalSec = 2f;
+    [SerializeField] private bool autoConnect = true;
 
-    public event Action<OledTouchEvent> TouchReceived;
-    public event Action<OledTouchEvent> DriverTouchReceived;
-    public event Action<OledTouchEvent> PassengerTouchReceived;
+    [Header("Receiver")]
+    [SerializeField] private OledTouchRouter touchRouter;
 
-    public void ReceiveRawJson(string rawJson)
+    [Header("Debug")]
+    [SerializeField] private bool logConnection = true;
+    [SerializeField] private bool logReceivedMessage = false;
+
+    private readonly Queue<string> messageQueue = new Queue<string>();
+    private readonly Queue<string> logQueue = new Queue<string>();
+
+    private readonly object messageLock = new object();
+    private readonly object logLock = new object();
+
+    private Thread workerThread;
+    private TcpClient currentClient;
+    private volatile bool shouldRun;
+    private volatile bool isConnected;
+
+    public bool IsConnected
     {
-        if (logRawJson)
-        {
-            Debug.Log("[OLED Touch Raw] " + rawJson);
-        }
-
-        if (!OledTouchJsonParser.TryParse(
-                rawJson,
-                out OledTouchEvent touchEvent,
-                out string errorMessage
-            ))
-        {
-            Debug.LogWarning("[OLED Touch] Parse failed: " + errorMessage + " | Raw: " + rawJson);
-            return;
-        }
-
-        RouteTouchEvent(touchEvent);
+        get { return isConnected; }
     }
 
-    public void RouteTouchEvent(OledTouchEvent touchEvent)
+    private void Start()
     {
-        if (touchEvent == null)
+        if (autoConnect)
+        {
+            Connect();
+        }
+    }
+
+    private void Update()
+    {
+        FlushLogs();
+        FlushMessages();
+    }
+
+    private void OnDestroy()
+    {
+        Disconnect();
+    }
+
+    private void OnApplicationQuit()
+    {
+        Disconnect();
+    }
+
+    public void Connect()
+    {
+        if (workerThread != null && workerThread.IsAlive)
         {
             return;
         }
 
-        if (logParsedEvent)
+        shouldRun = true;
+
+        workerThread = new Thread(RunClientLoop);
+        workerThread.IsBackground = true;
+        workerThread.Start();
+    }
+
+    public void Disconnect()
+    {
+        shouldRun = false;
+        isConnected = false;
+
+        CloseCurrentClient();
+
+        if (workerThread != null && workerThread.IsAlive)
         {
-            Debug.Log("[OLED Touch] " + touchEvent);
+            workerThread.Join(500);
         }
 
-        TouchReceived?.Invoke(touchEvent);
+        workerThread = null;
+    }
 
-        if (touchEvent.Source == OledTouchSource.Driver)
+    private void RunClientLoop()
+    {
+        while (shouldRun)
         {
-            DriverTouchReceived?.Invoke(touchEvent);
+            try
+            {
+                EnqueueLog("[OLED TCP] Connecting to " + host + ":" + port);
+
+                using (TcpClient client = new TcpClient())
+                {
+                    currentClient = client;
+                    client.NoDelay = true;
+                    client.Connect(host, port);
+
+                    isConnected = true;
+                    EnqueueLog("[OLED TCP] Connected.");
+
+                    using (NetworkStream stream = client.GetStream())
+                    using (StreamReader reader = new StreamReader(stream, Encoding.UTF8))
+                    {
+                        while (shouldRun && client.Connected)
+                        {
+                            string line = reader.ReadLine();
+
+                            if (line == null)
+                            {
+                                break;
+                            }
+
+                            EnqueueMessage(line);
+                        }
+                    }
+                }
+            }
+            catch (SocketException exception)
+            {
+                EnqueueLog("[OLED TCP] Socket error: " + exception.Message);
+            }
+            catch (IOException exception)
+            {
+                EnqueueLog("[OLED TCP] IO error: " + exception.Message);
+            }
+            catch (Exception exception)
+            {
+                EnqueueLog("[OLED TCP] Error: " + exception.Message);
+            }
+            finally
+            {
+                isConnected = false;
+                CloseCurrentClient();
+                EnqueueLog("[OLED TCP] Disconnected.");
+            }
+
+            if (!shouldRun)
+            {
+                break;
+            }
+
+            int sleepMs = Mathf.Max(100, Mathf.RoundToInt(reconnectIntervalSec * 1000f));
+            Thread.Sleep(sleepMs);
+        }
+    }
+
+    private void EnqueueMessage(string message)
+    {
+        lock (messageLock)
+        {
+            messageQueue.Enqueue(message);
+        }
+    }
+
+    private void EnqueueLog(string log)
+    {
+        lock (logLock)
+        {
+            logQueue.Enqueue(log);
+        }
+    }
+
+    private void FlushMessages()
+    {
+        while (true)
+        {
+            string message = null;
+
+            lock (messageLock)
+            {
+                if (messageQueue.Count > 0)
+                {
+                    message = messageQueue.Dequeue();
+                }
+            }
+
+            if (message == null)
+            {
+                break;
+            }
+
+            if (logReceivedMessage)
+            {
+                Debug.Log("[OLED TCP Message] " + message);
+            }
+
+            if (touchRouter != null)
+            {
+                touchRouter.ReceiveRawJson(message);
+            }
+        }
+    }
+
+    private void FlushLogs()
+    {
+        if (!logConnection)
+        {
+            ClearLogs();
             return;
         }
 
-        if (touchEvent.Source == OledTouchSource.Passenger)
+        while (true)
         {
-            PassengerTouchReceived?.Invoke(touchEvent);
+            string log = null;
+
+            lock (logLock)
+            {
+                if (logQueue.Count > 0)
+                {
+                    log = logQueue.Dequeue();
+                }
+            }
+
+            if (log == null)
+            {
+                break;
+            }
+
+            Debug.Log(log);
+        }
+    }
+
+    private void ClearLogs()
+    {
+        lock (logLock)
+        {
+            logQueue.Clear();
+        }
+    }
+
+    private void CloseCurrentClient()
+    {
+        try
+        {
+            if (currentClient != null)
+            {
+                currentClient.Close();
+            }
+        }
+        catch
+        {
+            // 終了時の例外は無視する。
+        }
+        finally
+        {
+            currentClient = null;
         }
     }
 }
