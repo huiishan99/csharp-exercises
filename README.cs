@@ -1,94 +1,141 @@
 using UnityEngine;
 
-namespace PushButtonSliderLite
+#if ENABLE_INPUT_SYSTEM
+using UnityEngine.InputSystem;
+#endif
+
+public class KinemaMockKeyboardInput : MonoBehaviour
 {
-    public class LightingThemeCommandEmitter : MonoBehaviour
+    [SerializeField] private KinemaMockDisplayController controller;
+
+    private void Update()
     {
-        [SerializeField] private ThemeButtonGroup themeButtonGroup;
-        [SerializeField] private global::KinemaCommandBridge commandBridge;
-
-        [Header("Theme Names")]
-        [SerializeField] private string[] themeNames =
+        if (controller == null)
         {
-            "SmartDrive",
-            "Exiting",
-            "Working",
-            "Gaming",
-            "Movie",
-            "Manual"
-        };
-
-        private void Awake()
-        {
-            ResolveReferences();
+            return;
         }
 
-        private void OnEnable()
+        if (IsIgnTogglePressed())
         {
-            ResolveReferences();
-
-            if (themeButtonGroup != null)
-            {
-                themeButtonGroup.onUserSelectedIndexChanged.RemoveListener(OnUserSelectedTheme);
-                themeButtonGroup.onUserSelectedIndexChanged.AddListener(OnUserSelectedTheme);
-            }
+            controller.ToggleIgn();
+            return;
         }
 
-        private void OnDisable()
+        if (IsAutoPressed())
         {
-            if (themeButtonGroup != null)
-            {
-                themeButtonGroup.onUserSelectedIndexChanged.RemoveListener(OnUserSelectedTheme);
-            }
+            controller.ToggleAutoPopup();
+            return;
         }
 
-        public void OnUserSelectedTheme(int selectedIndex)
+        if (IsParkingPressed())
         {
-            if (selectedIndex < 0)
-            {
-                Debug.LogWarning("[Lighting CMD] Invalid theme index: " + selectedIndex);
-                return;
-            }
-
-            string themeName = GetThemeName(selectedIndex);
-
-            Debug.Log(
-                "[Lighting CMD] Theme selected. index="
-                + selectedIndex
-                + " name="
-                + themeName
-            );
-
-            if (commandBridge == null)
-            {
-                Debug.LogWarning("[Lighting CMD] CommandBridge is not assigned.");
-                return;
-            }
-
-            commandBridge.SendLightingPresetCommand(selectedIndex);
+            controller.ShiftP();
+            return;
         }
 
-        private string GetThemeName(int index)
+        if (IsDrivePressed())
         {
-            if (themeNames == null || index < 0 || index >= themeNames.Length)
-            {
-                return "Unknown";
-            }
-
-            return themeNames[index];
+            controller.ShiftD();
+            return;
         }
 
-        private void ResolveReferences()
+        if (IsRearPressed())
         {
-            if (themeButtonGroup == null)
-            {
-                themeButtonGroup = GetComponent<ThemeButtonGroup>();
-            }
-
-            if (commandBridge == null)
-            {
-                commandBridge = FindFirstObjectByType<global::KinemaCommandBridge>();
-            }
+            controller.ShiftR();
         }
+    }
+
+    private bool IsIgnTogglePressed()
+    {
+#if ENABLE_INPUT_SYSTEM
+        Keyboard keyboard = Keyboard.current;
+
+        if (keyboard == null)
+        {
+            return false;
+        }
+
+        return keyboard.digit0Key.wasPressedThisFrame
+            || keyboard.numpad0Key.wasPressedThisFrame
+            || keyboard.iKey.wasPressedThisFrame;
+#elif ENABLE_LEGACY_INPUT_MANAGER
+        return Input.GetKeyDown(KeyCode.Alpha0)
+            || Input.GetKeyDown(KeyCode.Keypad0)
+            || Input.GetKeyDown(KeyCode.I);
+#else
+        return false;
+#endif
+    }
+
+    private bool IsAutoPressed()
+    {
+#if ENABLE_INPUT_SYSTEM
+        Keyboard keyboard = Keyboard.current;
+
+        if (keyboard == null)
+        {
+            return false;
+        }
+
+        return keyboard.aKey.wasPressedThisFrame;
+#elif ENABLE_LEGACY_INPUT_MANAGER
+        return Input.GetKeyDown(KeyCode.A);
+#else
+        return false;
+#endif
+    }
+
+    private bool IsParkingPressed()
+    {
+#if ENABLE_INPUT_SYSTEM
+        Keyboard keyboard = Keyboard.current;
+
+        if (keyboard == null)
+        {
+            return false;
+        }
+
+        return keyboard.pKey.wasPressedThisFrame;
+#elif ENABLE_LEGACY_INPUT_MANAGER
+        return Input.GetKeyDown(KeyCode.P);
+#else
+        return false;
+#endif
+    }
+
+    private bool IsDrivePressed()
+    {
+#if ENABLE_INPUT_SYSTEM
+        Keyboard keyboard = Keyboard.current;
+
+        if (keyboard == null)
+        {
+            return false;
+        }
+
+        return keyboard.dKey.wasPressedThisFrame;
+#elif ENABLE_LEGACY_INPUT_MANAGER
+        return Input.GetKeyDown(KeyCode.D);
+#else
+        return false;
+#endif
+    }
+
+    private bool IsRearPressed()
+    {
+#if ENABLE_INPUT_SYSTEM
+        Keyboard keyboard = Keyboard.current;
+
+        if (keyboard == null)
+        {
+            return false;
+        }
+
+        return keyboard.rKey.wasPressedThisFrame;
+#elif ENABLE_LEGACY_INPUT_MANAGER
+        return Input.GetKeyDown(KeyCode.R);
+#else
+        return false;
+#endif
     }
 }
