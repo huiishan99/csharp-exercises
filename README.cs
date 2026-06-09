@@ -1,99 +1,274 @@
-using System.Globalization;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Net.Sockets;
+using System.Text;
+using System.Threading;
+using UnityEngine;
 
-public static class GuiCommandFactory
+public class GuiCommandTcpClientSender : MonoBehaviour
 {
-    public const string FullModeCommand = "full_mode_cmd";
-    public const string HalfModeCommand = "half_mode_cmd";
-    public const string CloseModeCommand = "close_mode_cmd";
+    [Header("Connection Settings")]
+    [SerializeField] private string host = "127.0.0.1";
+    [SerializeField] private int port = 5000;
+    [SerializeField] private float reconnectIntervalSec = 2f;
+    [SerializeField] private bool autoConnect = true;
 
-    public const string StartLedPresetCommand = "CMD_START_LED_PRESET";
-    public const string SetLedBrightnessCommand = "CMD_SET_LED_BRIGHTNESS";
-    public const string SetLedSaturationCommand = "CMD_SET_LED_SATURATION";
+    [Header("Queue")]
+    [SerializeField] private int maxQueueSize = 100;
 
-    // 暫定Command。正式名はBackend側仕様に合わせて後で変更する。
-    public const string SetAudioOutputStateCommand = "CMD_SET_AUDIO_OUTPUT_STATE";
+    [Header("Debug")]
+    [SerializeField] private bool logConnection = true;
+    [SerializeField] private bool logSendMessage = true;
 
-    public static string CreateCommand(string messageType)
+    private readonly Queue<string> sendQueue = new Queue<string>();
+    private readonly Queue<string> logQueue = new Queue<string>();
+
+    private readonly object sendLock = new object();
+    private readonly object logLock = new object();
+
+    private Thread workerThread;
+    private TcpClient currentClient;
+    private volatile bool shouldRun;
+    private volatile bool isConnected;
+
+    public bool IsConnected
     {
-        return CreateCommand(messageType, "{}");
+        get { return isConnected; }
     }
 
-    public static string CreateCommand(string messageType, string payloadJson)
+    private void Start()
     {
-        if (string.IsNullOrEmpty(payloadJson))
+        if (autoConnect)
         {
-            payloadJson = "{}";
+            Connect();
+        }
+    }
+
+    private void Update()
+    {
+        FlushLogs();
+    }
+
+    private void OnDestroy()
+    {
+        Disconnect();
+    }
+
+    private void OnApplicationQuit()
+    {
+        Disconnect();
+    }
+
+    public void Connect()
+    {
+        if (workerThread != null && workerThread.IsAlive)
+        {
+            return;
         }
 
-        return "{\"message_type\":\""
-            + EscapeJson(messageType)
-            + "\",\"payload\":"
-            + payloadJson
-            + "}";
+        shouldRun = true;
+
+        workerThread = new Thread(RunClientLoop);
+        workerThread.IsBackground = true;
+        workerThread.Start();
     }
 
-    public static string CreateIndexPayload(string key, int value)
+    public void Disconnect()
     {
-        return "{\"" + EscapeJson(key) + "\":" + value + "}";
-    }
+        shouldRun = false;
+        isConnected = false;
 
-    public static string CreateFloatPayload(string key, float value)
-    {
-        return "{\""
-            + EscapeJson(key)
-            + "\":"
-            + FloatToJson(value)
-            + "}";
-    }
+        CloseCurrentClient();
 
-    public static string CreateAudioOutputStatePayload(bool left, bool right, float volume)
-    {
-        return "{\"left\":"
-            + BoolToJson(left)
-            + ",\"right\":"
-            + BoolToJson(right)
-            + ",\"volume\":"
-            + FloatToJson(Clamp01(volume))
-            + "}";
-    }
-
-    private static string BoolToJson(bool value)
-    {
-        return value ? "true" : "false";
-    }
-
-    private static string FloatToJson(float value)
-    {
-        return value.ToString("0.###", CultureInfo.InvariantCulture);
-    }
-
-    private static float Clamp01(float value)
-    {
-        if (value < 0f)
+        if (workerThread != null && workerThread.IsAlive)
         {
-            return 0f;
+            workerThread.Join(500);
         }
 
-        if (value > 1f)
-        {
-            return 1f;
-        }
-
-        return value;
+        workerThread = null;
     }
 
-    private static string EscapeJson(string value)
+    public void SendCommand(string messageType)
     {
-        if (string.IsNullOrEmpty(value))
+        SendRawJson(GuiCommandFactory.CreateCommand(messageType));
+    }
+
+    public void SendCommand(string messageType, string payloadJson)
+    {
+        SendRawJson(GuiCommandFactory.CreateCommand(messageType, payloadJson));
+    }
+
+    public void SendRawJson(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
         {
-            return "";
+            return;
         }
 
-        return value
-            .Replace("\\", "\\\\")
-            .Replace("\"", "\\\"")
-            .Replace("\n", "\\n")
-            .Replace("\r", "\\r")
-            .Replace("\t", "\\t");
+        lock (sendLock)
+        {
+            while (sendQueue.Count >= maxQueueSize)
+            {
+                sendQueue.Dequeue();
+                EnqueueLog("[GUI CMD TCP] Send queue is full. Dropped oldest message.");
+            }
+
+            sendQueue.Enqueue(json);
+        }
+
+        if (logSendMessage)
+        {
+            EnqueueLog("[GUI CMD Queued] " + json);
+        }
+    }
+
+    private void RunClientLoop()
+    {
+        while (shouldRun)
+        {
+            try
+            {
+                EnqueueLog("[GUI CMD TCP] Connecting to " + host + ":" + port);
+
+                using (TcpClient client = new TcpClient())
+                {
+                    currentClient = client;
+                    client.NoDelay = true;
+                    client.Connect(host, port);
+
+                    isConnected = true;
+                    EnqueueLog("[GUI CMD TCP] Connected.");
+
+                    using (NetworkStream stream = client.GetStream())
+                    using (StreamWriter writer = new StreamWriter(stream, Encoding.UTF8))
+                    {
+                        writer.NewLine = "\n";
+                        writer.AutoFlush = true;
+
+                        while (shouldRun && client.Connected)
+                        {
+                            string message = DequeueMessage();
+
+                            if (message == null)
+                            {
+                                Thread.Sleep(10);
+                                continue;
+                            }
+
+                            writer.WriteLine(message);
+
+                            if (logSendMessage)
+                            {
+                                EnqueueLog("[GUI CMD Sent] " + message);
+                            }
+                        }
+                    }
+                }
+            }
+            catch (SocketException exception)
+            {
+                EnqueueLog("[GUI CMD TCP] Socket error: " + exception.Message);
+            }
+            catch (IOException exception)
+            {
+                EnqueueLog("[GUI CMD TCP] IO error: " + exception.Message);
+            }
+            catch (Exception exception)
+            {
+                EnqueueLog("[GUI CMD TCP] Error: " + exception.Message);
+            }
+            finally
+            {
+                isConnected = false;
+                CloseCurrentClient();
+                EnqueueLog("[GUI CMD TCP] Disconnected.");
+            }
+
+            if (!shouldRun)
+            {
+                break;
+            }
+
+            int sleepMs = Mathf.Max(100, Mathf.RoundToInt(reconnectIntervalSec * 1000f));
+            Thread.Sleep(sleepMs);
+        }
+    }
+
+    private string DequeueMessage()
+    {
+        lock (sendLock)
+        {
+            if (sendQueue.Count == 0)
+            {
+                return null;
+            }
+
+            return sendQueue.Dequeue();
+        }
+    }
+
+    private void EnqueueLog(string log)
+    {
+        lock (logLock)
+        {
+            logQueue.Enqueue(log);
+        }
+    }
+
+    private void FlushLogs()
+    {
+        if (!logConnection && !logSendMessage)
+        {
+            ClearLogs();
+            return;
+        }
+
+        while (true)
+        {
+            string log = null;
+
+            lock (logLock)
+            {
+                if (logQueue.Count > 0)
+                {
+                    log = logQueue.Dequeue();
+                }
+            }
+
+            if (log == null)
+            {
+                break;
+            }
+
+            Debug.Log(log);
+        }
+    }
+
+    private void ClearLogs()
+    {
+        lock (logLock)
+        {
+            logQueue.Clear();
+        }
+    }
+
+    private void CloseCurrentClient()
+    {
+        try
+        {
+            if (currentClient != null)
+            {
+                currentClient.Close();
+            }
+        }
+        catch
+        {
+            // 終了時の例外は無視する。
+        }
+        finally
+        {
+            currentClient = null;
+        }
     }
 }
