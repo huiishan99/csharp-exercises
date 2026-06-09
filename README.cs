@@ -1,73 +1,89 @@
+using System;
 using UnityEngine;
-using UnityEngine.EventSystems;
+using UnityEngine.UI;
 
 namespace PushButtonSliderLite
 {
     [DisallowMultipleComponent]
-    public sealed class ThemeSelectButton : MonoBehaviour, IPointerClickHandler
+    public sealed class ThemeSpriteApplier : MonoBehaviour
     {
-        [Header("视觉效果")]
-        [SerializeField] private PressVisualEffect visualEffect;
-
-        [Header("输入状态")]
-        [SerializeField] private bool interactable = true;
-
-        private ThemeButtonGroup ownerGroup;
-        private int buttonIndex = -1;
-        private bool isSelected;
-
-        public int ButtonIndex
+        [Serializable]
+        public sealed class ThemeSpriteSet
         {
-            get { return buttonIndex; }
+            public Sprite sliderTrackSprite;
+            public Sprite externalImageSprite;
         }
 
-        public bool IsSelected
-        {
-            get { return isSelected; }
-        }
+        [Header("主题按钮组")]
+        [SerializeField] private ThemeButtonGroup buttonGroup;
+
+        [Header("要被替换的 Image")]
+        [SerializeField] private Image sliderTrackImage;
+        [SerializeField] private Image externalImage;
+
+        [Header("6组主题 Sprite：顺序对应 0-5")]
+        [SerializeField] private ThemeSpriteSet[] themeSprites = new ThemeSpriteSet[6];
 
         private void Awake()
         {
-            if (visualEffect == null)
+            if (buttonGroup == null)
             {
-                visualEffect = GetComponent<PressVisualEffect>();
+                buttonGroup = GetComponent<ThemeButtonGroup>();
             }
         }
 
-        public void Initialize(ThemeButtonGroup group, int index)
+        private void OnEnable()
         {
-            ownerGroup = group;
-            buttonIndex = index;
+            if (buttonGroup != null)
+            {
+                buttonGroup.onSelectedIndexChanged.AddListener(ApplyByIndex);
+            }
         }
 
-        public void OnPointerClick(PointerEventData eventData)
+        private void Start()
         {
-            if (!interactable)
-            {
-                return;
-            }
-
-            if (ownerGroup == null)
+            if (buttonGroup == null)
             {
                 return;
             }
 
-            ownerGroup.SelectIndexFromUser(buttonIndex);
-        }
-
-        public void SetSelected(bool selected)
-        {
-            isSelected = selected;
-
-            if (visualEffect != null)
+            if (buttonGroup.SelectedIndex >= 0)
             {
-                visualEffect.SetPressed(selected);
+                ApplyByIndex(buttonGroup.SelectedIndex);
             }
         }
 
-        public void SetInteractable(bool canInteract)
+        private void OnDisable()
         {
-            interactable = canInteract;
+            if (buttonGroup != null)
+            {
+                buttonGroup.onSelectedIndexChanged.RemoveListener(ApplyByIndex);
+            }
+        }
+
+        public void ApplyByIndex(int index)
+        {
+            if (themeSprites == null || index < 0 || index >= themeSprites.Length)
+            {
+                return;
+            }
+
+            ThemeSpriteSet spriteSet = themeSprites[index];
+
+            if (spriteSet == null)
+            {
+                return;
+            }
+
+            if (sliderTrackImage != null && spriteSet.sliderTrackSprite != null)
+            {
+                sliderTrackImage.sprite = spriteSet.sliderTrackSprite;
+            }
+
+            if (externalImage != null && spriteSet.externalImageSprite != null)
+            {
+                externalImage.sprite = spriteSet.externalImageSprite;
+            }
         }
     }
 }
