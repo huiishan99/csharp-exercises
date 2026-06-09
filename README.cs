@@ -1,274 +1,103 @@
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Net.Sockets;
-using System.Text;
-using System.Threading;
 using UnityEngine;
 
-public class GuiCommandTcpClientSender : MonoBehaviour
+public class KinemaCommandBridge : MonoBehaviour
 {
-    [Header("Connection Settings")]
-    [SerializeField] private string host = "127.0.0.1";
-    [SerializeField] private int port = 5000;
-    [SerializeField] private float reconnectIntervalSec = 2f;
-    [SerializeField] private bool autoConnect = true;
+    [SerializeField] private GuiCommandTcpClientSender commandSender;
 
-    [Header("Queue")]
-    [SerializeField] private int maxQueueSize = 100;
+    [Header("Audio Command")]
+    [SerializeField] private bool sendAudioOutputCommand = true;
+    [SerializeField] private string audioOutputCommandName = GuiCommandFactory.SetAudioOutputStateCommand;
 
-    [Header("Debug")]
-    [SerializeField] private bool logConnection = true;
-    [SerializeField] private bool logSendMessage = true;
-
-    private readonly Queue<string> sendQueue = new Queue<string>();
-    private readonly Queue<string> logQueue = new Queue<string>();
-
-    private readonly object sendLock = new object();
-    private readonly object logLock = new object();
-
-    private Thread workerThread;
-    private TcpClient currentClient;
-    private volatile bool shouldRun;
-    private volatile bool isConnected;
-
-    public bool IsConnected
+    private void Awake()
     {
-        get { return isConnected; }
+        ResolveReferences();
     }
 
-    private void Start()
+    public void SendFullModeCommand()
     {
-        if (autoConnect)
-        {
-            Connect();
-        }
+        SendCommand(GuiCommandFactory.FullModeCommand);
     }
 
-    private void Update()
+    public void SendHalfModeCommand()
     {
-        FlushLogs();
+        SendCommand(GuiCommandFactory.HalfModeCommand);
     }
 
-    private void OnDestroy()
+    public void SendCloseModeCommand()
     {
-        Disconnect();
+        SendCommand(GuiCommandFactory.CloseModeCommand);
     }
 
-    private void OnApplicationQuit()
+    public void SendLightingPresetCommand(int index)
     {
-        Disconnect();
+        string payload = GuiCommandFactory.CreateIndexPayload("index", index);
+        SendCommand(GuiCommandFactory.StartLedPresetCommand, payload);
     }
 
-    public void Connect()
+    public void SendLightingBrightnessCommand(float brightness)
     {
-        if (workerThread != null && workerThread.IsAlive)
+        string payload = GuiCommandFactory.CreateFloatPayload("brightness", Mathf.Clamp01(brightness));
+        SendCommand(GuiCommandFactory.SetLedBrightnessCommand, payload);
+    }
+
+    public void SendLightingSaturationCommand(float saturation)
+    {
+        string payload = GuiCommandFactory.CreateFloatPayload("saturation", Mathf.Clamp01(saturation));
+        SendCommand(GuiCommandFactory.SetLedSaturationCommand, payload);
+    }
+
+    public void SendAudioOutputStateCommand(bool leftOn, bool rightOn, float volume)
+    {
+        if (!sendAudioOutputCommand)
         {
             return;
         }
 
-        shouldRun = true;
+        string payload = GuiCommandFactory.CreateAudioOutputStatePayload(
+            leftOn,
+            rightOn,
+            Mathf.Clamp01(volume)
+        );
 
-        workerThread = new Thread(RunClientLoop);
-        workerThread.IsBackground = true;
-        workerThread.Start();
+        SendCommand(audioOutputCommandName, payload);
     }
 
-    public void Disconnect()
+    private void SendCommand(string messageType)
     {
-        shouldRun = false;
-        isConnected = false;
+        ResolveReferences();
 
-        CloseCurrentClient();
-
-        if (workerThread != null && workerThread.IsAlive)
+        if (commandSender == null)
         {
-            workerThread.Join(500);
-        }
-
-        workerThread = null;
-    }
-
-    public void SendCommand(string messageType)
-    {
-        SendRawJson(GuiCommandFactory.CreateCommand(messageType));
-    }
-
-    public void SendCommand(string messageType, string payloadJson)
-    {
-        SendRawJson(GuiCommandFactory.CreateCommand(messageType, payloadJson));
-    }
-
-    public void SendRawJson(string json)
-    {
-        if (string.IsNullOrWhiteSpace(json))
-        {
+            Debug.LogWarning("[GUI CMD] Command sender is not assigned. message_type=" + messageType);
             return;
         }
 
-        lock (sendLock)
-        {
-            while (sendQueue.Count >= maxQueueSize)
-            {
-                sendQueue.Dequeue();
-                EnqueueLog("[GUI CMD TCP] Send queue is full. Dropped oldest message.");
-            }
-
-            sendQueue.Enqueue(json);
-        }
-
-        if (logSendMessage)
-        {
-            EnqueueLog("[GUI CMD Queued] " + json);
-        }
+        commandSender.SendCommand(messageType);
     }
 
-    private void RunClientLoop()
+    private void SendCommand(string messageType, string payloadJson)
     {
-        while (shouldRun)
+        ResolveReferences();
+
+        if (commandSender == null)
         {
-            try
-            {
-                EnqueueLog("[GUI CMD TCP] Connecting to " + host + ":" + port);
-
-                using (TcpClient client = new TcpClient())
-                {
-                    currentClient = client;
-                    client.NoDelay = true;
-                    client.Connect(host, port);
-
-                    isConnected = true;
-                    EnqueueLog("[GUI CMD TCP] Connected.");
-
-                    using (NetworkStream stream = client.GetStream())
-                    using (StreamWriter writer = new StreamWriter(stream, Encoding.UTF8))
-                    {
-                        writer.NewLine = "\n";
-                        writer.AutoFlush = true;
-
-                        while (shouldRun && client.Connected)
-                        {
-                            string message = DequeueMessage();
-
-                            if (message == null)
-                            {
-                                Thread.Sleep(10);
-                                continue;
-                            }
-
-                            writer.WriteLine(message);
-
-                            if (logSendMessage)
-                            {
-                                EnqueueLog("[GUI CMD Sent] " + message);
-                            }
-                        }
-                    }
-                }
-            }
-            catch (SocketException exception)
-            {
-                EnqueueLog("[GUI CMD TCP] Socket error: " + exception.Message);
-            }
-            catch (IOException exception)
-            {
-                EnqueueLog("[GUI CMD TCP] IO error: " + exception.Message);
-            }
-            catch (Exception exception)
-            {
-                EnqueueLog("[GUI CMD TCP] Error: " + exception.Message);
-            }
-            finally
-            {
-                isConnected = false;
-                CloseCurrentClient();
-                EnqueueLog("[GUI CMD TCP] Disconnected.");
-            }
-
-            if (!shouldRun)
-            {
-                break;
-            }
-
-            int sleepMs = Mathf.Max(100, Mathf.RoundToInt(reconnectIntervalSec * 1000f));
-            Thread.Sleep(sleepMs);
-        }
-    }
-
-    private string DequeueMessage()
-    {
-        lock (sendLock)
-        {
-            if (sendQueue.Count == 0)
-            {
-                return null;
-            }
-
-            return sendQueue.Dequeue();
-        }
-    }
-
-    private void EnqueueLog(string log)
-    {
-        lock (logLock)
-        {
-            logQueue.Enqueue(log);
-        }
-    }
-
-    private void FlushLogs()
-    {
-        if (!logConnection && !logSendMessage)
-        {
-            ClearLogs();
+            Debug.LogWarning("[GUI CMD] Command sender is not assigned. message_type=" + messageType);
             return;
         }
 
-        while (true)
-        {
-            string log = null;
-
-            lock (logLock)
-            {
-                if (logQueue.Count > 0)
-                {
-                    log = logQueue.Dequeue();
-                }
-            }
-
-            if (log == null)
-            {
-                break;
-            }
-
-            Debug.Log(log);
-        }
+        commandSender.SendCommand(messageType, payloadJson);
     }
 
-    private void ClearLogs()
+    private void ResolveReferences()
     {
-        lock (logLock)
+        if (commandSender == null)
         {
-            logQueue.Clear();
+            commandSender = GetComponent<GuiCommandTcpClientSender>();
         }
-    }
 
-    private void CloseCurrentClient()
-    {
-        try
+        if (commandSender == null)
         {
-            if (currentClient != null)
-            {
-                currentClient.Close();
-            }
-        }
-        catch
-        {
-            // 終了時の例外は無視する。
-        }
-        finally
-        {
-            currentClient = null;
+            commandSender = FindFirstObjectByType<GuiCommandTcpClientSender>();
         }
     }
 }
