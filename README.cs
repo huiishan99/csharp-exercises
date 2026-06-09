@@ -1,88 +1,93 @@
-using System;
 using UnityEngine;
-using UnityEngine.UI;
 
 namespace PushButtonSliderLite
 {
-    [DisallowMultipleComponent]
-    public sealed class ThemeSpriteApplier : MonoBehaviour
+    public class LightingThemeCommandEmitter : MonoBehaviour
     {
-        [Serializable]
-        public sealed class ThemeSpriteSet
+        [SerializeField] private ThemeButtonGroup themeButtonGroup;
+        [SerializeField] private global::KinemaCommandBridge commandBridge;
+
+        [Header("Theme Names")]
+        [SerializeField] private string[] themeNames =
         {
-            public Sprite sliderTrackSprite;
-            public Sprite externalImageSprite;
-        }
-
-        [Header("主题按钮组")]
-        [SerializeField] private ThemeButtonGroup buttonGroup;
-
-        [Header("要被替换的 Image")]
-        [SerializeField] private Image sliderTrackImage;
-        [SerializeField] private Image externalImage;
-
-        [Header("6组主题 Sprite：顺序对应 0-5")]
-        [SerializeField] private ThemeSpriteSet[] themeSprites = new ThemeSpriteSet[6];
+            "SmartDrive",
+            "Exiting",
+            "Working",
+            "Gaming",
+            "Movie",
+            "Manual"
+        };
 
         private void Awake()
         {
-            if (buttonGroup == null)
-            {
-                buttonGroup = GetComponent<ThemeButtonGroup>();
-            }
+            ResolveReferences();
         }
 
         private void OnEnable()
         {
-            if (buttonGroup != null)
-            {
-                buttonGroup.onSelectedIndexChanged.AddListener(ApplyByIndex);
-            }
-        }
+            ResolveReferences();
 
-        private void Start()
-        {
-            if (buttonGroup == null)
+            if (themeButtonGroup != null)
             {
-                return;
-            }
-
-            if (buttonGroup.SelectedIndex >= 0)
-            {
-                ApplyByIndex(buttonGroup.SelectedIndex);
+                themeButtonGroup.onUserSelectedIndexChanged.RemoveListener(OnUserSelectedTheme);
+                themeButtonGroup.onUserSelectedIndexChanged.AddListener(OnUserSelectedTheme);
             }
         }
 
         private void OnDisable()
         {
-            if (buttonGroup != null)
+            if (themeButtonGroup != null)
             {
-                buttonGroup.onSelectedIndexChanged.RemoveListener(ApplyByIndex);
+                themeButtonGroup.onUserSelectedIndexChanged.RemoveListener(OnUserSelectedTheme);
             }
         }
 
-        public void ApplyByIndex(int index)
+        public void OnUserSelectedTheme(int selectedIndex)
         {
-            if (themeSprites == null || index < 0 || index >= themeSprites.Length)
+            if (selectedIndex < 0)
             {
+                Debug.LogWarning("[Lighting CMD] Invalid theme index: " + selectedIndex);
                 return;
             }
 
-            ThemeSpriteSet spriteSet = themeSprites[index];
+            string themeName = GetThemeName(selectedIndex);
 
-            if (spriteSet == null)
+            Debug.Log(
+                "[Lighting CMD] Theme selected. index="
+                + selectedIndex
+                + " name="
+                + themeName
+            );
+
+            if (commandBridge == null)
             {
+                Debug.LogWarning("[Lighting CMD] CommandBridge is not assigned.");
                 return;
             }
 
-            if (sliderTrackImage != null && spriteSet.sliderTrackSprite != null)
+            commandBridge.SendLightingPresetCommand(selectedIndex);
+        }
+
+        private string GetThemeName(int index)
+        {
+            if (themeNames == null || index < 0 || index >= themeNames.Length)
             {
-                sliderTrackImage.sprite = spriteSet.sliderTrackSprite;
+                return "Unknown";
             }
 
-            if (externalImage != null && spriteSet.externalImageSprite != null)
+            return themeNames[index];
+        }
+
+        private void ResolveReferences()
+        {
+            if (themeButtonGroup == null)
             {
-                externalImage.sprite = spriteSet.externalImageSprite;
+                themeButtonGroup = GetComponent<ThemeButtonGroup>();
+            }
+
+            if (commandBridge == null)
+            {
+                commandBridge = FindFirstObjectByType<global::KinemaCommandBridge>();
             }
         }
     }
