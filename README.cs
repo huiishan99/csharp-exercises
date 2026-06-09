@@ -1,141 +1,363 @@
+using System.Collections;
 using UnityEngine;
 
-#if ENABLE_INPUT_SYSTEM
-using UnityEngine.InputSystem;
-#endif
-
-public class KinemaMockKeyboardInput : MonoBehaviour
+public enum KinemaMockDisplayMode
 {
-    [SerializeField] private KinemaMockDisplayController controller;
+    Close,
+    Opening,
+    Full,
+    Half,
+    RearView
+}
 
-    private void Update()
+public class KinemaMockDisplayController : MonoBehaviour
+{
+    [Header("Root")]
+    [SerializeField] private GameObject screenViewportRoot;
+    [SerializeField] private GameObject sourcePanelObject;
+
+    [Header("Managers")]
+    [SerializeField] private DemoScreenViewport screenViewport;
+    [SerializeField] private DemoPageSwitcher pageSwitcher;
+    [SerializeField] private DemoSourcePanel sourcePanel;
+    [SerializeField] private KinemaMockPopupController popupController;
+
+    [Header("Command")]
+    [SerializeField] private KinemaCommandBridge commandBridge;
+    [SerializeField] private bool sendMechaCommand = true;
+
+    [Header("Page")]
+    [SerializeField] private DemoPageId openingPage = DemoPageId.Welcome;
+    [SerializeField] private DemoPageId drivePage = DemoPageId.NormalDrive;
+    [SerializeField] private DemoPageId rearPage = DemoPageId.RearView;
+
+    [Header("Parking")]
+    [SerializeField] private DemoSourceId parkingDefaultSource = DemoSourceId.Setting;
+
+    [Header("Opening")]
+    [SerializeField] private float openingDuration = 3.5f;
+
+    public KinemaMockDisplayMode CurrentDisplayMode { get; private set; }
+    public bool IsIgnOn { get; private set; }
+
+    private Coroutine openingCoroutine;
+
+    private void Awake()
     {
-        if (controller == null)
+        if (commandBridge == null)
+        {
+            commandBridge = FindFirstObjectByType<KinemaCommandBridge>();
+        }
+    }
+
+    private void Start()
+    {
+        ApplyCloseMode();
+    }
+
+    public void ToggleIgn()
+    {
+        if (IsIgnOn)
+        {
+            IgnOff();
+            return;
+        }
+
+        IgnOn();
+    }
+
+    public void IgnOn()
+    {
+        if (IsIgnOn)
         {
             return;
         }
 
-        if (IsIgnTogglePressed())
+        IsIgnOn = true;
+        EnterOpeningMode();
+    }
+
+    public void IgnOff()
+    {
+        if (!IsIgnOn)
         {
-            controller.ToggleIgn();
             return;
         }
 
-        if (IsAutoPressed())
+        IsIgnOn = false;
+        StopOpeningCoroutine();
+        ApplyCloseMode();
+        SendCloseModeCommand();
+    }
+
+    public void ShiftP()
+    {
+        if (!CanAcceptShiftInput())
         {
-            controller.ToggleAutoPopup();
             return;
         }
 
-        if (IsParkingPressed())
+        EnterFullMode(true);
+    }
+
+    public void ShiftD()
+    {
+        if (!CanAcceptShiftInput())
         {
-            controller.ShiftP();
             return;
         }
 
-        if (IsDrivePressed())
+        EnterHalfMode(true);
+    }
+
+    public void ShiftR()
+    {
+        if (!CanAcceptShiftInput())
         {
-            controller.ShiftD();
             return;
         }
 
-        if (IsRearPressed())
+        EnterRearViewMode(true);
+    }
+
+    public void ToggleAutoPopup()
+    {
+        if (!IsIgnOn)
         {
-            controller.ShiftR();
+            return;
+        }
+
+        if (CurrentDisplayMode != KinemaMockDisplayMode.Full)
+        {
+            HidePopup();
+            return;
+        }
+
+        if (popupController != null)
+        {
+            popupController.TogglePopup();
         }
     }
 
-    private bool IsIgnTogglePressed()
+    private bool CanAcceptShiftInput()
     {
-#if ENABLE_INPUT_SYSTEM
-        Keyboard keyboard = Keyboard.current;
-
-        if (keyboard == null)
+        if (!IsIgnOn)
         {
             return false;
         }
 
-        return keyboard.digit0Key.wasPressedThisFrame
-            || keyboard.numpad0Key.wasPressedThisFrame
-            || keyboard.iKey.wasPressedThisFrame;
-#elif ENABLE_LEGACY_INPUT_MANAGER
-        return Input.GetKeyDown(KeyCode.Alpha0)
-            || Input.GetKeyDown(KeyCode.Keypad0)
-            || Input.GetKeyDown(KeyCode.I);
-#else
-        return false;
-#endif
-    }
-
-    private bool IsAutoPressed()
-    {
-#if ENABLE_INPUT_SYSTEM
-        Keyboard keyboard = Keyboard.current;
-
-        if (keyboard == null)
+        if (CurrentDisplayMode == KinemaMockDisplayMode.Opening)
         {
             return false;
         }
 
-        return keyboard.aKey.wasPressedThisFrame;
-#elif ENABLE_LEGACY_INPUT_MANAGER
-        return Input.GetKeyDown(KeyCode.A);
-#else
-        return false;
-#endif
+        return true;
     }
 
-    private bool IsParkingPressed()
+    private void ApplyCloseMode()
     {
-#if ENABLE_INPUT_SYSTEM
-        Keyboard keyboard = Keyboard.current;
+        CurrentDisplayMode = KinemaMockDisplayMode.Close;
 
-        if (keyboard == null)
+        HidePopup();
+
+        if (sourcePanel != null)
         {
-            return false;
+            sourcePanel.ResetFullSource(parkingDefaultSource);
         }
 
-        return keyboard.pKey.wasPressedThisFrame;
-#elif ENABLE_LEGACY_INPUT_MANAGER
-        return Input.GetKeyDown(KeyCode.P);
-#else
-        return false;
-#endif
+        SetActive(screenViewportRoot, false);
+        SetActive(sourcePanelObject, false);
     }
 
-    private bool IsDrivePressed()
+    private void EnterOpeningMode()
     {
-#if ENABLE_INPUT_SYSTEM
-        Keyboard keyboard = Keyboard.current;
+        StopOpeningCoroutine();
 
-        if (keyboard == null)
+        CurrentDisplayMode = KinemaMockDisplayMode.Opening;
+
+        HidePopup();
+
+        SetActive(screenViewportRoot, true);
+        SetActive(sourcePanelObject, false);
+
+        if (screenViewport != null)
         {
-            return false;
+            screenViewport.SetMode(DemoScreenOpenMode.SemiOpen);
         }
 
-        return keyboard.dKey.wasPressedThisFrame;
-#elif ENABLE_LEGACY_INPUT_MANAGER
-        return Input.GetKeyDown(KeyCode.D);
-#else
-        return false;
-#endif
+        if (pageSwitcher != null)
+        {
+            pageSwitcher.ShowPage(openingPage);
+        }
+
+        SendHalfModeCommand();
+
+        openingCoroutine = StartCoroutine(OpeningRoutine());
     }
 
-    private bool IsRearPressed()
+    private IEnumerator OpeningRoutine()
     {
-#if ENABLE_INPUT_SYSTEM
-        Keyboard keyboard = Keyboard.current;
+        yield return new WaitForSeconds(openingDuration);
 
-        if (keyboard == null)
+        if (!IsIgnOn)
         {
-            return false;
+            yield break;
         }
 
-        return keyboard.rKey.wasPressedThisFrame;
-#elif ENABLE_LEGACY_INPUT_MANAGER
-        return Input.GetKeyDown(KeyCode.R);
-#else
-        return false;
-#endif
+        if (CurrentDisplayMode != KinemaMockDisplayMode.Opening)
+        {
+            yield break;
+        }
+
+        EnterFullMode(true);
+    }
+
+    private void EnterFullMode(bool shouldSendCommand)
+    {
+        CurrentDisplayMode = KinemaMockDisplayMode.Full;
+
+        SetActive(screenViewportRoot, true);
+        SetActive(sourcePanelObject, true);
+
+        if (screenViewport != null)
+        {
+            screenViewport.SetMode(DemoScreenOpenMode.FullOpen);
+        }
+
+        if (sourcePanel != null)
+        {
+            sourcePanel.ApplyVehicleMode(DemoVehicleMode.Parking);
+            sourcePanel.ShowCurrentFullSource();
+        }
+        else if (pageSwitcher != null)
+        {
+            pageSwitcher.ShowPage(DemoPageId.LightingColorChange);
+        }
+
+        if (shouldSendCommand)
+        {
+            SendFullModeCommand();
+        }
+    }
+
+    private void EnterHalfMode(bool shouldSendCommand)
+    {
+        CurrentDisplayMode = KinemaMockDisplayMode.Half;
+
+        HidePopup();
+
+        SetActive(screenViewportRoot, true);
+        SetActive(sourcePanelObject, true);
+
+        if (screenViewport != null)
+        {
+            screenViewport.SetMode(DemoScreenOpenMode.SemiOpen);
+        }
+
+        if (pageSwitcher != null)
+        {
+            pageSwitcher.ShowPage(drivePage);
+        }
+
+        if (sourcePanel != null)
+        {
+            sourcePanel.ApplyVehicleMode(DemoVehicleMode.Drive);
+        }
+
+        if (shouldSendCommand)
+        {
+            SendHalfModeCommand();
+        }
+    }
+
+    private void EnterRearViewMode(bool shouldSendCommand)
+    {
+        CurrentDisplayMode = KinemaMockDisplayMode.RearView;
+
+        HidePopup();
+
+        SetActive(screenViewportRoot, true);
+        SetActive(sourcePanelObject, true);
+
+        if (screenViewport != null)
+        {
+            screenViewport.SetMode(DemoScreenOpenMode.SemiOpen);
+        }
+
+        if (pageSwitcher != null)
+        {
+            pageSwitcher.ShowPage(rearPage);
+        }
+
+        if (sourcePanel != null)
+        {
+            sourcePanel.ApplyVehicleMode(DemoVehicleMode.Rear);
+        }
+
+        if (shouldSendCommand)
+        {
+            SendHalfModeCommand();
+        }
+    }
+
+    private void SendFullModeCommand()
+    {
+        if (!sendMechaCommand || commandBridge == null)
+        {
+            return;
+        }
+
+        commandBridge.SendFullModeCommand();
+    }
+
+    private void SendHalfModeCommand()
+    {
+        if (!sendMechaCommand || commandBridge == null)
+        {
+            return;
+        }
+
+        commandBridge.SendHalfModeCommand();
+    }
+
+    private void SendCloseModeCommand()
+    {
+        if (!sendMechaCommand || commandBridge == null)
+        {
+            return;
+        }
+
+        commandBridge.SendCloseModeCommand();
+    }
+
+    private void HidePopup()
+    {
+        if (popupController == null)
+        {
+            return;
+        }
+
+        popupController.HidePopup();
+    }
+
+    private void StopOpeningCoroutine()
+    {
+        if (openingCoroutine == null)
+        {
+            return;
+        }
+
+        StopCoroutine(openingCoroutine);
+        openingCoroutine = null;
+    }
+
+    private void SetActive(GameObject target, bool isActive)
+    {
+        if (target == null)
+        {
+            return;
+        }
+
+        target.SetActive(isActive);
     }
 }
