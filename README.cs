@@ -1,106 +1,153 @@
-using UnityEngine;
-using PushButtonSliderLite;
+import socket
+import threading
+from typing import List, Tuple
 
-public enum LightingSliderCommandType
-{
-    Brightness,
-    Saturation
-}
+BIND_HOST = "0.0.0.0"
+PORT = 5000
 
-public class LightingSliderCommandEmitter : MonoBehaviour
-{
-    [SerializeField] private LightingSliderCommandType commandType = LightingSliderCommandType.Brightness;
-    [SerializeField] private HorizontalSliderValue sliderValue;
-    [SerializeField] private KinemaCommandBridge commandBridge;
 
-    [Header("Drag Send Option")]
-    [SerializeField] private bool sendWhileChanging = false;
-    [SerializeField] private float minSendIntervalSec = 0.1f;
+class GuiCommandMockServer:
+    def __init__(self, host: str, port: int):
+        self.host = host
+        self.port = port
+        self.running = True
+        self.server_socket = None
+        self.clients: List[Tuple[socket.socket, Tuple[str, int]]] = []
+        self.clients_lock = threading.Lock()
 
-    private float latestValue;
-    private float lastSendTime = -999f;
+    def start(self):
+        server_thread = threading.Thread(target=self._run_server, daemon=True)
+        server_thread.start()
 
-    private void Awake()
-    {
-        ResolveReferences();
+        print("[GuiCommandMockServer] Started.")
+        print(f"[GuiCommandMockServer] Listening target: {self.host}:{self.port}")
+        print("[GuiCommandMockServer] Unityから送られたCommand JSONを表示します。")
+        print("[GuiCommandMockServer] Commands:")
+        print("  clients : show connected clients")
+        print("  q       : quit")
 
-        if (sliderValue != null)
-        {
-            latestValue = sliderValue.Value;
-        }
-    }
+        self._run_console_loop()
 
-    public void OnSliderValueChanged(float value)
-    {
-        latestValue = Mathf.Clamp01(value);
+    def _run_server(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
+            self.server_socket = server_socket
+            server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server_socket.bind((self.host, self.port))
+            server_socket.listen(8)
 
-        if (!sendWhileChanging)
-        {
-            return;
-        }
+            print(f"[GuiCommandMockServer] Listening on {self.host}:{self.port}")
 
-        if (Time.unscaledTime - lastSendTime < minSendIntervalSec)
-        {
-            return;
-        }
+            while self.running:
+                try:
+                    client_socket, address = server_socket.accept()
+                    client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 
-        SendValue(latestValue);
-    }
+                    with self.clients_lock:
+                        self.clients.append((client_socket, address))
 
-    public void OnSliderDragEnded()
-    {
-        SendCurrentValue();
-    }
+                    print(f"[GuiCommandMockServer] Unity connected: {address}")
 
-    public void SendValueImmediately(float value)
-    {
-        latestValue = Mathf.Clamp01(value);
-        SendValue(latestValue);
-    }
+                    client_thread = threading.Thread(
+                        target=self._run_client_reader,
+                        args=(client_socket, address),
+                        daemon=True,
+                    )
+                    client_thread.start()
+                except OSError:
+                    break
 
-    public void SendCurrentValue()
-    {
-        ResolveReferences();
+    def _run_client_reader(self, client_socket: socket.socket, address: Tuple[str, int]):
+        buffer = ""
 
-        if (sliderValue != null)
-        {
-            latestValue = sliderValue.Value;
-        }
+        try:
+            while self.running:
+                data = client_socket.recv(4096)
 
-        SendValue(latestValue);
-    }
+                if not data:
+                    break
 
-    private void SendValue(float value)
-    {
-        ResolveReferences();
+                buffer += data.decode("utf-8", errors="replace")
 
-        if (commandBridge == null)
-        {
-            Debug.LogWarning("[Lighting CMD] Command bridge is not assigned.");
-            return;
-        }
+                while "\n" in buffer:
+                    line, buffer = buffer.split("\n", 1)
+                    line = line.strip()
 
-        lastSendTime = Time.unscaledTime;
+                    if line:
+                        print(f"[GuiCommandMockServer] Received from {address}: {line}")
+        except OSError as error:
+            print(f"[GuiCommandMockServer] Client read error {address}: {error}")
+        finally:
+            self._remove_client(client_socket, address)
 
-        if (commandType == LightingSliderCommandType.Brightness)
-        {
-            commandBridge.SendLightingBrightnessCommand(value);
-            return;
-        }
+    def _run_console_loop(self):
+        while self.running:
+            try:
+                command = input("> ").strip()
+            except EOFError:
+                break
+            except KeyboardInterrupt:
+                self.running = False
+                self._close_all_clients()
+                self._close_server_socket()
+                break
 
-        commandBridge.SendLightingSaturationCommand(value);
-    }
+            if not command:
+                continue
 
-    private void ResolveReferences()
-    {
-        if (sliderValue == null)
-        {
-            sliderValue = GetComponent<HorizontalSliderValue>();
-        }
+            if command == "q":
+                self.running = False
+                self._close_all_clients()
+                self._close_server_socket()
+                break
 
-        if (commandBridge == null)
-        {
-            commandBridge = FindFirstObjectByType<KinemaCommandBridge>();
-        }
-    }
-}
+            if command == "clients":
+                self._print_clients()
+                continue
+
+            print("[GuiCommandMockServer] Unknown command. Use clients / q.")
+
+    def _print_clients(self):
+        with self.clients_lock:
+            if len(self.clients) == 0:
+                print("[GuiCommandMockServer] No connected clients.")
+                return
+
+            print("[GuiCommandMockServer] Connected clients:")
+
+            for index, (_, address) in enumerate(self.clients):
+                print(f"  {index}: {address}")
+
+    def _remove_client(self, client_socket: socket.socket, address: Tuple[str, int]):
+        try:
+            client_socket.close()
+        except OSError:
+            pass
+
+        with self.clients_lock:
+            self.clients = [entry for entry in self.clients if entry[0] != client_socket]
+
+        print(f"[GuiCommandMockServer] Unity disconnected: {address}")
+
+    def _close_all_clients(self):
+        with self.clients_lock:
+            for client_socket, _ in self.clients:
+                try:
+                    client_socket.close()
+                except OSError:
+                    pass
+
+            self.clients.clear()
+
+    def _close_server_socket(self):
+        if self.server_socket is None:
+            return
+
+        try:
+            self.server_socket.close()
+        except OSError:
+            pass
+
+
+if __name__ == "__main__":
+    server = GuiCommandMockServer(BIND_HOST, PORT)
+    server.start()
