@@ -1,80 +1,101 @@
 using UnityEngine;
+using PushButtonSliderLite;
 
-public class DemoSpeakerCommandEmitter : MonoBehaviour
+public enum LightingSliderCommandType
 {
-    [SerializeField] private DemoSpeakerState speakerState;
-    [SerializeField] private KinemaCommandBridge commandBridge;
-    [SerializeField] private bool ignoreInitialNotification = true;
+    Brightness,
+    Saturation
+}
 
-    private bool hasReceivedNotification;
+public class LightingSliderCommandEmitter : MonoBehaviour
+{
+    [SerializeField] private LightingSliderCommandType commandType = LightingSliderCommandType.Brightness;
+    [SerializeField] private HorizontalSliderValue sliderValue;
+    [SerializeField] private KinemaCommandBridge commandBridge;
+
+    [Header("Drag Send Option")]
+    [SerializeField] private bool sendWhileChanging = false;
+    [SerializeField] private float minSendIntervalSec = 0.1f;
+
+    private float latestValue;
+    private float lastSendTime = -999f;
 
     private void Awake()
     {
         ResolveReferences();
-    }
 
-    private void OnEnable()
-    {
-        ResolveReferences();
-
-        if (speakerState != null)
+        if (sliderValue != null)
         {
-            speakerState.SpeakerStateChanged -= OnSpeakerStateChanged;
-            speakerState.SpeakerStateChanged += OnSpeakerStateChanged;
+            latestValue = sliderValue.Value;
         }
     }
 
-    private void OnDisable()
+    public void OnSliderValueChanged(float value)
     {
-        if (speakerState != null)
-        {
-            speakerState.SpeakerStateChanged -= OnSpeakerStateChanged;
-        }
-    }
+        latestValue = Mathf.Clamp01(value);
 
-    private void OnSpeakerStateChanged()
-    {
-        if (ignoreInitialNotification && !hasReceivedNotification)
-        {
-            hasReceivedNotification = true;
-            return;
-        }
-
-        hasReceivedNotification = true;
-        SendCurrentState();
-    }
-
-    public void SendCurrentState()
-    {
-        ResolveReferences();
-
-        if (speakerState == null || commandBridge == null)
+        if (!sendWhileChanging)
         {
             return;
         }
 
-        commandBridge.SendAudioOutputStateCommand(
-            speakerState.LeftSpeakerOn,
-            speakerState.RightSpeakerOn,
-            speakerState.Volume
-        );
+        if (Time.unscaledTime - lastSendTime < minSendIntervalSec)
+        {
+            return;
+        }
+
+        SendValue(latestValue);
+    }
+
+    public void OnSliderDragEnded()
+    {
+        SendCurrentValue();
+    }
+
+    public void SendValueImmediately(float value)
+    {
+        latestValue = Mathf.Clamp01(value);
+        SendValue(latestValue);
+    }
+
+    public void SendCurrentValue()
+    {
+        ResolveReferences();
+
+        if (sliderValue != null)
+        {
+            latestValue = sliderValue.Value;
+        }
+
+        SendValue(latestValue);
+    }
+
+    private void SendValue(float value)
+    {
+        ResolveReferences();
+
+        if (commandBridge == null)
+        {
+            Debug.LogWarning("[Lighting CMD] Command bridge is not assigned.");
+            return;
+        }
+
+        lastSendTime = Time.unscaledTime;
+
+        if (commandType == LightingSliderCommandType.Brightness)
+        {
+            commandBridge.SendLightingBrightnessCommand(value);
+            return;
+        }
+
+        commandBridge.SendLightingSaturationCommand(value);
     }
 
     private void ResolveReferences()
     {
-        if (speakerState == null)
+        if (sliderValue == null)
         {
-            speakerState = GetComponent<DemoSpeakerState>();
-        }
-
-        if (speakerState == null)
-        {
-            speakerState = FindFirstObjectByType<DemoSpeakerState>();
-        }
-
-        if (commandBridge == null)
-        {
-            commandBridge = GetComponent<KinemaCommandBridge>();
+            sliderValue = GetComponent<HorizontalSliderValue>();
         }
 
         if (commandBridge == null)
