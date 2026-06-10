@@ -21,15 +21,14 @@ public class LightingSliderCommandEmitter : MonoBehaviour
     [Header("Realtime Send Option")]
     [SerializeField] private bool sendWhileChanging = true;
 
-    // 0 にすると、OnValueChanged が呼ばれるたびに送信する。
-    // Hardware側が重い場合は 0.03〜0.05 に上げる。
+    // 0 = 每次 Slider value 改变都发送。
+    // 如果硬件侧太卡，可以改成 0.03 或 0.05。
     [SerializeField] private float minSendIntervalSec = 0f;
 
-    // 同じ値を連続送信しすぎないための差分。
-    // 完全リアルタイム優先なら 0 にする。
+    // 避免同一个值重复发送太多次。
     [SerializeField] private float minValueDelta = 0.001f;
 
-    // Drag終了時に最終値を必ず送る。
+    // 松手时再补发最终值。
     [SerializeField] private bool sendOnDragEnded = true;
 
     [Header("Debug")]
@@ -61,29 +60,22 @@ public class LightingSliderCommandEmitter : MonoBehaviour
     }
 
     /// <summary>
-    /// Slider drag中に呼ぶ。
-    /// sendWhileChanging=true の場合、ここで即時Command送信する。
+    /// Slider drag 中に呼ばれる。
+    /// UnityEvent の float 引数が Static 0 になる場合があるため、
+    /// 渡された value は使わず、HorizontalSliderValue.Value を直接読む。
     /// </summary>
-    public void OnSliderValueChanged(float value)
+    public void OnSliderValueChanged(float ignoredValue)
     {
-        latestValue = Mathf.Clamp01(value);
-
         if (!sendWhileChanging)
         {
             return;
         }
 
-        if (!CanSendRealtime(latestValue))
-        {
-            return;
-        }
-
-        SendValue(latestValue, "ValueChanged", false);
+        SendCurrentValue("ValueChanged", false);
     }
 
     /// <summary>
-    /// Drag終了時に呼ぶ。
-    /// 最終値を必ず送る。
+    /// Drag 終了時に最終値を必ず送る。
     /// </summary>
     public void OnSliderDragEnded()
     {
@@ -97,7 +89,7 @@ public class LightingSliderCommandEmitter : MonoBehaviour
 
     /// <summary>
     /// +/- Button または StepController から呼ぶ。
-    /// 渡された value は信用せず、次フレームで HorizontalSliderValue から再取得する。
+    /// StepController の更新完了を待つため、次フレームで現在値を読む。
     /// </summary>
     public void SendValueImmediately(float ignoredValue)
     {
@@ -121,11 +113,13 @@ public class LightingSliderCommandEmitter : MonoBehaviour
     {
         ResolveReferences();
 
-        if (sliderValue != null)
+        if (sliderValue == null)
         {
-            latestValue = Mathf.Clamp01(sliderValue.Value);
+            Debug.LogWarning("[Lighting Slider CMD] SliderValue is not assigned. object=" + gameObject.name);
+            return;
         }
 
+        latestValue = Mathf.Clamp01(sliderValue.Value);
         SendValue(latestValue, reason, forceSend);
     }
 
@@ -141,7 +135,7 @@ public class LightingSliderCommandEmitter : MonoBehaviour
 
     private IEnumerator SendCurrentValueNextFrame(string reason)
     {
-        // StepController / SliderValue の更新完了を待つ。
+        // StepController / HorizontalSliderValue の更新完了を待つ。
         yield return null;
 
         delayedSendCoroutine = null;
