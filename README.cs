@@ -1,20 +1,86 @@
-public class GuiEventMessage
+using System;
+using UnityEngine;
+
+public static class GuiEventJsonParser
 {
-    public string MessageType { get; private set; }
-    public string RawJson { get; private set; }
-
-    public GuiEventShifterPayload ShifterPayload { get; set; }
-    public GuiEventTouchPayload TouchPayload { get; set; }
-    public GuiEventHvacPayload HvacPayload { get; set; }
-
-    public GuiEventMessage(string messageType, string rawJson)
+    public static bool TryParse(
+        string rawJson,
+        out GuiEventMessage message,
+        out string errorMessage
+    )
     {
-        MessageType = messageType;
-        RawJson = rawJson;
+        message = null;
+        errorMessage = "";
+
+        if (string.IsNullOrWhiteSpace(rawJson))
+        {
+            errorMessage = "Raw json is empty.";
+            return false;
+        }
+
+        GuiEventMessageTypeEnvelope typeEnvelope;
+
+        try
+        {
+            typeEnvelope = JsonUtility.FromJson<GuiEventMessageTypeEnvelope>(rawJson);
+        }
+        catch (Exception exception)
+        {
+            errorMessage = "Failed to parse message_type. " + exception.Message;
+            return false;
+        }
+
+        if (typeEnvelope == null || string.IsNullOrWhiteSpace(typeEnvelope.message_type))
+        {
+            errorMessage = "message_type is missing.";
+            return false;
+        }
+
+        string messageType = typeEnvelope.message_type.Trim();
+        message = new GuiEventMessage(messageType, rawJson);
+
+        try
+        {
+            FillPayload(rawJson, message);
+            return true;
+        }
+        catch (Exception exception)
+        {
+            errorMessage = "Failed to parse payload. " + exception.Message;
+            return false;
+        }
     }
 
-    public override string ToString()
+    private static void FillPayload(string rawJson, GuiEventMessage message)
     {
-        return "message_type=" + MessageType;
+        if (GuiEventType.EqualsType(message.MessageType, GuiEventType.ShifterChanged))
+        {
+            GuiEventShifterEnvelope envelope =
+                JsonUtility.FromJson<GuiEventShifterEnvelope>(rawJson);
+
+            message.ShifterPayload = envelope == null ? null : envelope.payload;
+            return;
+        }
+
+        if (GuiEventType.EqualsType(message.MessageType, GuiEventType.Touch))
+        {
+            GuiEventTouchEnvelope envelope =
+                JsonUtility.FromJson<GuiEventTouchEnvelope>(rawJson);
+
+            message.TouchPayload = envelope == null ? null : envelope.payload;
+            return;
+        }
+
+        if (GuiEventType.EqualsType(message.MessageType, GuiEventType.HvacDisplayModeResult))
+        {
+            GuiEventHvacEnvelope envelope =
+                JsonUtility.FromJson<GuiEventHvacEnvelope>(rawJson);
+
+            message.HvacPayload = envelope == null ? null : envelope.payload;
+            return;
+        }
+
+        // Empty payload 系は message_type だけ分かればよい。
+        JsonUtility.FromJson<GuiEventEmptyEnvelope>(rawJson);
     }
 }
