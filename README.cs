@@ -1,3 +1,4 @@
+using System.Collections;
 using UnityEngine;
 using PushButtonSliderLite;
 
@@ -26,6 +27,7 @@ public class LightingSliderCommandEmitter : MonoBehaviour
 
     private float latestValue;
     private float lastSendTime = -999f;
+    private Coroutine delayedSendCoroutine;
 
     private void Awake()
     {
@@ -34,6 +36,15 @@ public class LightingSliderCommandEmitter : MonoBehaviour
         if (sliderValue != null)
         {
             latestValue = Mathf.Clamp01(sliderValue.Value);
+        }
+    }
+
+    private void OnDisable()
+    {
+        if (delayedSendCoroutine != null)
+        {
+            StopCoroutine(delayedSendCoroutine);
+            delayedSendCoroutine = null;
         }
     }
 
@@ -59,10 +70,21 @@ public class LightingSliderCommandEmitter : MonoBehaviour
         SendCurrentValue("DragEnded");
     }
 
-    public void SendValueImmediately(float value)
+    /// <summary>
+    /// +/- Button 或 StepController から呼ぶ。
+    /// 渡された value は信用せず、次フレームで HorizontalSliderValue から再取得する。
+    /// </summary>
+    public void SendValueImmediately(float ignoredValue)
     {
-        latestValue = Mathf.Clamp01(value);
-        SendValue(latestValue, "StepButton");
+        RequestSendCurrentValueNextFrame("StepButton");
+    }
+
+    /// <summary>
+    /// Button OnClick など、float を渡せない場合はこちらを使う。
+    /// </summary>
+    public void SendCurrentValueAfterStepButton()
+    {
+        RequestSendCurrentValueNextFrame("StepButton");
     }
 
     public void SendCurrentValue()
@@ -80,6 +102,25 @@ public class LightingSliderCommandEmitter : MonoBehaviour
         }
 
         SendValue(latestValue, reason);
+    }
+
+    private void RequestSendCurrentValueNextFrame(string reason)
+    {
+        if (delayedSendCoroutine != null)
+        {
+            StopCoroutine(delayedSendCoroutine);
+        }
+
+        delayedSendCoroutine = StartCoroutine(SendCurrentValueNextFrame(reason));
+    }
+
+    private IEnumerator SendCurrentValueNextFrame(string reason)
+    {
+        // StepController / SliderValue の更新完了を待つ。
+        yield return null;
+
+        delayedSendCoroutine = null;
+        SendCurrentValue(reason);
     }
 
     private void SendValue(float value, string reason)
