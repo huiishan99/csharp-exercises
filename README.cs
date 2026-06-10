@@ -1,38 +1,105 @@
-public static class GuiEventType
+using System;
+
+[Serializable]
+public class GuiEventMessageTypeEnvelope
 {
-    public const string IgOn = "EVT_IG_ON";
-    public const string IgOff = "EVT_IG_OFF";
+    public string message_type;
+}
 
-    public const string ShifterChanged = "EVT_SHIFTER_CHANGED";
+[Serializable]
+public class GuiEventEmptyPayload
+{
+}
 
-    public const string HvacPopup = "EVT_HVAC_POPUP";
-    public const string HvacDisplayModeResult = "EVT_HVAC_DISPLAY_MODE_RESULT";
+[Serializable]
+public class GuiEventEmptyEnvelope
+{
+    public string message_type;
+    public GuiEventEmptyPayload payload;
+}
 
-    public const string MediaVolumeUp = "EVT_MEDIA_VOLUME_UP";
-    public const string MediaVolumeDown = "EVT_MEDIA_VOLUME_DOWN";
+[Serializable]
+public class GuiEventShifterPayload
+{
+    public string gear;
+    public string shift;
+    public string value;
 
-    public const string Touch = "EVT_TOUCH";
-
-    public const string CloseModeStatus = "close_mode_sts";
-    public const string HalfModeStatus = "half_mode_sts";
-    public const string FullModeStatus = "full_mode_sts";
-    public const string OtherModeStatus = "other_mode_sts";
-
-    public static bool EqualsType(string actual, string expected)
+    public string GetGearText()
     {
-        if (string.IsNullOrEmpty(actual) || string.IsNullOrEmpty(expected))
+        if (!string.IsNullOrEmpty(gear))
         {
-            return false;
+            return gear;
         }
 
-        return actual.Trim().ToLowerInvariant() == expected.Trim().ToLowerInvariant();
-    }
+        if (!string.IsNullOrEmpty(shift))
+        {
+            return shift;
+        }
 
-    public static bool IsMechaStatus(string messageType)
-    {
-        return EqualsType(messageType, CloseModeStatus)
-            || EqualsType(messageType, HalfModeStatus)
-            || EqualsType(messageType, FullModeStatus)
-            || EqualsType(messageType, OtherModeStatus);
+        if (!string.IsNullOrEmpty(value))
+        {
+            return value;
+        }
+
+        return "";
     }
+}
+
+[Serializable]
+public class GuiEventShifterEnvelope
+{
+    public string message_type;
+    public GuiEventShifterPayload payload;
+}
+
+[Serializable]
+public class GuiEventTouchPayload
+{
+    public string source;
+    public int x;
+    public int y;
+
+    // backend文書側の可能性: event
+    public string @event;
+
+    // 口頭I/F側の可能性: event_type
+    public string event_type;
+
+    public string GetTouchEventText()
+    {
+        if (!string.IsNullOrEmpty(event_type))
+        {
+            return event_type;
+        }
+
+        if (!string.IsNullOrEmpty(@event))
+        {
+            return @event;
+        }
+
+        return "";
+    }
+}
+
+[Serializable]
+public class GuiEventTouchEnvelope
+{
+    public string message_type;
+    public GuiEventTouchPayload payload;
+}
+
+[Serializable]
+public class GuiEventHvacPayload
+{
+    public string disp_mode;
+    public string result;
+    public string value;
+}
+
+[Serializable]
+public class GuiEventHvacEnvelope
+{
+    public string message_type;
+    public GuiEventHvacPayload payload;
 }
