@@ -1,259 +1,255 @@
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Net.Sockets;
-using System.Text;
-using System.Threading;
 using UnityEngine;
 
-public class GuiEventTcpClientReceiver : MonoBehaviour
+public class KinemaEventBridge : MonoBehaviour
 {
-    [Header("Connection Settings")]
-    [SerializeField] private string host = "127.0.0.1";
-    [SerializeField] private int port = 5001;
-    [SerializeField] private float reconnectIntervalSec = 2f;
-    [SerializeField] private bool autoConnect = true;
-
-    [Header("Dispatcher")]
     [SerializeField] private GuiEventDispatcher eventDispatcher;
+    [SerializeField] private KinemaMockDisplayController displayController;
+    [SerializeField] private DemoSpeakerState speakerState;
 
-    [Header("Debug")]
-    [SerializeField] private bool logConnection = true;
-    [SerializeField] private bool logReceivedMessage = false;
+    [Header("Handle Options")]
+    [SerializeField] private bool handleIgEvents = true;
+    [SerializeField] private bool handleShifterEvents = true;
+    [SerializeField] private bool handleHvacEvents = true;
+    [SerializeField] private bool handleAudioEvents = true;
+    [SerializeField] private bool logTouchEvents = true;
+    [SerializeField] private bool logMechaStatusEvents = true;
 
-    private readonly Queue<string> messageQueue = new Queue<string>();
-    private readonly Queue<string> logQueue = new Queue<string>();
-
-    private readonly object messageLock = new object();
-    private readonly object logLock = new object();
-
-    private Thread workerThread;
-    private TcpClient currentClient;
-
-    private volatile bool shouldRun;
-    private volatile bool isConnected;
-
-    public bool IsConnected
+    private void Awake()
     {
-        get { return isConnected; }
+        ResolveReferences();
     }
 
-    private void Start()
+    private void OnEnable()
     {
-        if (autoConnect)
-        {
-            Connect();
-        }
-    }
+        ResolveReferences();
 
-    private void Update()
-    {
-        FlushLogs();
-        FlushMessages();
-    }
-
-    private void OnDestroy()
-    {
-        Disconnect();
-    }
-
-    private void OnApplicationQuit()
-    {
-        Disconnect();
-    }
-
-    public void Connect()
-    {
-        if (workerThread != null && workerThread.IsAlive)
+        if (eventDispatcher == null)
         {
             return;
         }
 
-        shouldRun = true;
+        eventDispatcher.IgOnReceived -= OnIgOnReceived;
+        eventDispatcher.IgOffReceived -= OnIgOffReceived;
+        eventDispatcher.ShifterChangedReceived -= OnShifterChangedReceived;
+        eventDispatcher.HvacPopupReceived -= OnHvacPopupReceived;
+        eventDispatcher.MediaVolumeUpReceived -= OnMediaVolumeUpReceived;
+        eventDispatcher.MediaVolumeDownReceived -= OnMediaVolumeDownReceived;
+        eventDispatcher.TouchReceived -= OnTouchReceived;
+        eventDispatcher.MechaStatusReceived -= OnMechaStatusReceived;
+        eventDispatcher.HvacResultReceived -= OnHvacResultReceived;
+        eventDispatcher.UnknownEventReceived -= OnUnknownEventReceived;
 
-        workerThread = new Thread(RunClientLoop);
-        workerThread.IsBackground = true;
-        workerThread.Start();
+        eventDispatcher.IgOnReceived += OnIgOnReceived;
+        eventDispatcher.IgOffReceived += OnIgOffReceived;
+        eventDispatcher.ShifterChangedReceived += OnShifterChangedReceived;
+        eventDispatcher.HvacPopupReceived += OnHvacPopupReceived;
+        eventDispatcher.MediaVolumeUpReceived += OnMediaVolumeUpReceived;
+        eventDispatcher.MediaVolumeDownReceived += OnMediaVolumeDownReceived;
+        eventDispatcher.TouchReceived += OnTouchReceived;
+        eventDispatcher.MechaStatusReceived += OnMechaStatusReceived;
+        eventDispatcher.HvacResultReceived += OnHvacResultReceived;
+        eventDispatcher.UnknownEventReceived += OnUnknownEventReceived;
     }
 
-    public void Disconnect()
+    private void OnDisable()
     {
-        shouldRun = false;
-        isConnected = false;
-
-        CloseCurrentClient();
-
-        if (workerThread != null && workerThread.IsAlive)
+        if (eventDispatcher == null)
         {
-            workerThread.Join(500);
-        }
-
-        workerThread = null;
-    }
-
-    private void RunClientLoop()
-    {
-        while (shouldRun)
-        {
-            try
-            {
-                EnqueueLog("[GUI EVT TCP] Connecting to " + host + ":" + port);
-
-                using (TcpClient client = new TcpClient())
-                {
-                    currentClient = client;
-                    client.NoDelay = true;
-                    client.Connect(host, port);
-
-                    isConnected = true;
-                    EnqueueLog("[GUI EVT TCP] Connected.");
-
-                    using (NetworkStream stream = client.GetStream())
-                    using (StreamReader reader = new StreamReader(stream, Encoding.UTF8))
-                    {
-                        while (shouldRun && client.Connected)
-                        {
-                            string line = reader.ReadLine();
-
-                            if (line == null)
-                            {
-                                break;
-                            }
-
-                            EnqueueMessage(line);
-                        }
-                    }
-                }
-            }
-            catch (SocketException exception)
-            {
-                EnqueueLog("[GUI EVT TCP] Socket error: " + exception.Message);
-            }
-            catch (IOException exception)
-            {
-                EnqueueLog("[GUI EVT TCP] IO error: " + exception.Message);
-            }
-            catch (Exception exception)
-            {
-                EnqueueLog("[GUI EVT TCP] Error: " + exception.Message);
-            }
-            finally
-            {
-                isConnected = false;
-                CloseCurrentClient();
-                EnqueueLog("[GUI EVT TCP] Disconnected.");
-            }
-
-            if (!shouldRun)
-            {
-                break;
-            }
-
-            int sleepMs = Mathf.Max(100, Mathf.RoundToInt(reconnectIntervalSec * 1000f));
-            Thread.Sleep(sleepMs);
-        }
-    }
-
-    private void EnqueueMessage(string message)
-    {
-        lock (messageLock)
-        {
-            messageQueue.Enqueue(message);
-        }
-    }
-
-    private void EnqueueLog(string log)
-    {
-        lock (logLock)
-        {
-            logQueue.Enqueue(log);
-        }
-    }
-
-    private void FlushMessages()
-    {
-        while (true)
-        {
-            string message = null;
-
-            lock (messageLock)
-            {
-                if (messageQueue.Count > 0)
-                {
-                    message = messageQueue.Dequeue();
-                }
-            }
-
-            if (message == null)
-            {
-                break;
-            }
-
-            if (logReceivedMessage)
-            {
-                Debug.Log("[GUI EVT TCP Message] " + message);
-            }
-
-            if (eventDispatcher != null)
-            {
-                eventDispatcher.ReceiveRawJson(message);
-            }
-        }
-    }
-
-    private void FlushLogs()
-    {
-        if (!logConnection)
-        {
-            ClearLogs();
             return;
         }
 
-        while (true)
+        eventDispatcher.IgOnReceived -= OnIgOnReceived;
+        eventDispatcher.IgOffReceived -= OnIgOffReceived;
+        eventDispatcher.ShifterChangedReceived -= OnShifterChangedReceived;
+        eventDispatcher.HvacPopupReceived -= OnHvacPopupReceived;
+        eventDispatcher.MediaVolumeUpReceived -= OnMediaVolumeUpReceived;
+        eventDispatcher.MediaVolumeDownReceived -= OnMediaVolumeDownReceived;
+        eventDispatcher.TouchReceived -= OnTouchReceived;
+        eventDispatcher.MechaStatusReceived -= OnMechaStatusReceived;
+        eventDispatcher.HvacResultReceived -= OnHvacResultReceived;
+        eventDispatcher.UnknownEventReceived -= OnUnknownEventReceived;
+    }
+
+    private void OnIgOnReceived(GuiEventMessage message)
+    {
+        if (!handleIgEvents || displayController == null)
         {
-            string log = null;
+            return;
+        }
 
-            lock (logLock)
-            {
-                if (logQueue.Count > 0)
-                {
-                    log = logQueue.Dequeue();
-                }
-            }
+        displayController.IgnOn();
+    }
 
-            if (log == null)
-            {
-                break;
-            }
+    private void OnIgOffReceived(GuiEventMessage message)
+    {
+        if (!handleIgEvents || displayController == null)
+        {
+            return;
+        }
 
-            Debug.Log(log);
+        displayController.IgnOff();
+    }
+
+    private void OnShifterChangedReceived(GuiEventMessage message)
+    {
+        if (!handleShifterEvents || displayController == null)
+        {
+            return;
+        }
+
+        if (message == null || message.ShifterPayload == null)
+        {
+            Debug.LogWarning("[GUI EVT Bridge] Shifter payload is null.");
+            return;
+        }
+
+        string gear = NormalizeText(message.ShifterPayload.GetGearText());
+
+        if (gear == "p" || gear == "parking" || gear == "park")
+        {
+            displayController.ShiftP();
+            return;
+        }
+
+        if (gear == "d" || gear == "drive" || gear == "normaldrive")
+        {
+            displayController.ShiftD();
+            return;
+        }
+
+        if (gear == "r" || gear == "reverse" || gear == "rear")
+        {
+            displayController.ShiftR();
+            return;
+        }
+
+        Debug.LogWarning("[GUI EVT Bridge] Unknown gear: " + message.ShifterPayload.GetGearText());
+    }
+
+    private void OnHvacPopupReceived(GuiEventMessage message)
+    {
+        if (!handleHvacEvents || displayController == null)
+        {
+            return;
+        }
+
+        displayController.ToggleAutoPopup();
+    }
+
+    private void OnMediaVolumeUpReceived(GuiEventMessage message)
+    {
+        if (!handleAudioEvents || speakerState == null)
+        {
+            return;
+        }
+
+        speakerState.IncreaseVolume();
+    }
+
+    private void OnMediaVolumeDownReceived(GuiEventMessage message)
+    {
+        if (!handleAudioEvents || speakerState == null)
+        {
+            return;
+        }
+
+        speakerState.DecreaseVolume();
+    }
+
+    private void OnTouchReceived(GuiEventMessage message)
+    {
+        if (!logTouchEvents)
+        {
+            return;
+        }
+
+        if (message == null || message.TouchPayload == null)
+        {
+            Debug.LogWarning("[GUI EVT Touch] payload is null.");
+            return;
+        }
+
+        GuiEventTouchPayload payload = message.TouchPayload;
+
+        Debug.Log(
+            "[GUI EVT Touch] source="
+            + payload.source
+            + " event="
+            + payload.GetTouchEventText()
+            + " x="
+            + payload.x
+            + " y="
+            + payload.y
+        );
+    }
+
+    private void OnMechaStatusReceived(GuiEventMessage message)
+    {
+        if (!logMechaStatusEvents || message == null)
+        {
+            return;
+        }
+
+        Debug.Log("[GUI EVT MechaStatus] " + message.MessageType);
+    }
+
+    private void OnHvacResultReceived(GuiEventMessage message)
+    {
+        if (message == null)
+        {
+            return;
+        }
+
+        string payloadText = "";
+
+        if (message.HvacPayload != null)
+        {
+            payloadText = " disp_mode="
+                + message.HvacPayload.disp_mode
+                + " result="
+                + message.HvacPayload.result
+                + " value="
+                + message.HvacPayload.value;
+        }
+
+        Debug.Log("[GUI EVT HVAC Result] " + message.MessageType + payloadText);
+    }
+
+    private void OnUnknownEventReceived(GuiEventMessage message)
+    {
+        if (message == null)
+        {
+            return;
+        }
+
+        Debug.LogWarning("[GUI EVT Bridge] Unknown event: " + message.MessageType);
+    }
+
+    private void ResolveReferences()
+    {
+        if (eventDispatcher == null)
+        {
+            eventDispatcher = FindFirstObjectByType<GuiEventDispatcher>();
+        }
+
+        if (displayController == null)
+        {
+            displayController = FindFirstObjectByType<KinemaMockDisplayController>();
+        }
+
+        if (speakerState == null)
+        {
+            speakerState = FindFirstObjectByType<DemoSpeakerState>();
         }
     }
 
-    private void ClearLogs()
+    private string NormalizeText(string value)
     {
-        lock (logLock)
+        if (string.IsNullOrEmpty(value))
         {
-            logQueue.Clear();
+            return "";
         }
-    }
 
-    private void CloseCurrentClient()
-    {
-        try
-        {
-            if (currentClient != null)
-            {
-                currentClient.Close();
-            }
-        }
-        catch
-        {
-            // 終了時の例外は無視する。
-        }
-        finally
-        {
-            currentClient = null;
-        }
+        return value.Trim().ToLowerInvariant().Replace("_", "").Replace("-", "");
     }
 }
