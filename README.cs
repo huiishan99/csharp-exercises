@@ -18,15 +18,27 @@ public class LightingSliderCommandEmitter : MonoBehaviour
     [SerializeField] private HorizontalSliderValue sliderValue;
     [SerializeField] private KinemaCommandBridge commandBridge;
 
-    [Header("Drag Send Option")]
-    [SerializeField] private bool sendWhileChanging = false;
-    [SerializeField] private float minSendIntervalSec = 0.1f;
+    [Header("Realtime Send Option")]
+    [SerializeField] private bool sendWhileChanging = true;
+
+    // 0 にすると、OnValueChanged が呼ばれるたびに送信する。
+    // Hardware側が重い場合は 0.03〜0.05 に上げる。
+    [SerializeField] private float minSendIntervalSec = 0f;
+
+    // 同じ値を連続送信しすぎないための差分。
+    // 完全リアルタイム優先なら 0 にする。
+    [SerializeField] private float minValueDelta = 0.001f;
+
+    // Drag終了時に最終値を必ず送る。
+    [SerializeField] private bool sendOnDragEnded = true;
 
     [Header("Debug")]
     [SerializeField] private bool logSend = true;
 
     private float latestValue;
+    private float lastSentValue = -999f;
     private float lastSendTime = -999f;
+    private bool hasSentValue;
     private Coroutine delayedSendCoroutine;
 
     private void Awake()
@@ -48,6 +60,10 @@ public class LightingSliderCommandEmitter : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// Slider drag中に呼ぶ。
+    /// sendWhileChanging=true の場合、ここで即時Command送信する。
+    /// </summary>
     public void OnSliderValueChanged(float value)
     {
         latestValue = Mathf.Clamp01(value);
@@ -57,21 +73,30 @@ public class LightingSliderCommandEmitter : MonoBehaviour
             return;
         }
 
-        if (Time.unscaledTime - lastSendTime < minSendIntervalSec)
+        if (!CanSendRealtime(latestValue))
         {
             return;
         }
 
-        SendValue(latestValue, "ValueChanged");
-    }
-
-    public void OnSliderDragEnded()
-    {
-        SendCurrentValue("DragEnded");
+        SendValue(latestValue, "ValueChanged", false);
     }
 
     /// <summary>
-    /// +/- Button 或 StepController から呼ぶ。
+    /// Drag終了時に呼ぶ。
+    /// 最終値を必ず送る。
+    /// </summary>
+    public void OnSliderDragEnded()
+    {
+        if (!sendOnDragEnded)
+        {
+            return;
+        }
+
+        SendCurrentValue("DragEnded", true);
+    }
+
+    /// <summary>
+    /// +/- Button または StepController から呼ぶ。
     /// 渡された value は信用せず、次フレームで HorizontalSliderValue から再取得する。
     /// </summary>
     public void SendValueImmediately(float ignoredValue)
@@ -89,10 +114,10 @@ public class LightingSliderCommandEmitter : MonoBehaviour
 
     public void SendCurrentValue()
     {
-        SendCurrentValue("Manual");
+        SendCurrentValue("Manual", true);
     }
 
-    private void SendCurrentValue(string reason)
+    private void SendCurrentValue(string reason, bool forceSend)
     {
         ResolveReferences();
 
@@ -101,7 +126,7 @@ public class LightingSliderCommandEmitter : MonoBehaviour
             latestValue = Mathf.Clamp01(sliderValue.Value);
         }
 
-        SendValue(latestValue, reason);
+        SendValue(latestValue, reason, forceSend);
     }
 
     private void RequestSendCurrentValueNextFrame(string reason)
@@ -120,12 +145,40 @@ public class LightingSliderCommandEmitter : MonoBehaviour
         yield return null;
 
         delayedSendCoroutine = null;
-        SendCurrentValue(reason);
+        SendCurrentValue(reason, true);
     }
 
-    private void SendValue(float value, string reason)
+    private bool CanSendRealtime(float value)
+    {
+        if (minSendIntervalSec > 0f)
+        {
+            if (Time.unscaledTime - lastSendTime < minSendIntervalSec)
+            {
+                return false;
+            }
+        }
+
+        if (hasSentValue)
+        {
+            if (Mathf.Abs(value - lastSentValue) < minValueDelta)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private void SendValue(float value, string reason, bool forceSend)
     {
         ResolveReferences();
+
+        value = Mathf.Clamp01(value);
+
+        if (!forceSend && !CanSendRealtime(value))
+        {
+            return;
+        }
 
         if (commandBridge == null)
         {
@@ -134,6 +187,8 @@ public class LightingSliderCommandEmitter : MonoBehaviour
         }
 
         lastSendTime = Time.unscaledTime;
+        lastSentValue = value;
+        hasSentValue = true;
 
         if (logSend)
         {
