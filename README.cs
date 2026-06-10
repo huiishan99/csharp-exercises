@@ -1,222 +1,38 @@
-using System.Collections;
-using UnityEngine;
-using PushButtonSliderLite;
-
-public enum LightingSliderCommandType
+public static class GuiEventType
 {
-    Brightness,
-    Saturation
-}
+    public const string IgOn = "EVT_IG_ON";
+    public const string IgOff = "EVT_IG_OFF";
 
-[DisallowMultipleComponent]
-public class LightingSliderCommandEmitter : MonoBehaviour
-{
-    [Header("Command Type")]
-    [SerializeField] private LightingSliderCommandType commandType = LightingSliderCommandType.Brightness;
+    public const string ShifterChanged = "EVT_SHIFTER_CHANGED";
 
-    [Header("References")]
-    [SerializeField] private HorizontalSliderValue sliderValue;
-    [SerializeField] private KinemaCommandBridge commandBridge;
+    public const string HvacPopup = "EVT_HVAC_POPUP";
+    public const string HvacDisplayModeResult = "EVT_HVAC_DISPLAY_MODE_RESULT";
 
-    [Header("Realtime Send Option")]
-    [SerializeField] private bool sendWhileChanging = true;
+    public const string MediaVolumeUp = "EVT_MEDIA_VOLUME_UP";
+    public const string MediaVolumeDown = "EVT_MEDIA_VOLUME_DOWN";
 
-    // 0 = 每次 Slider value 改变都发送。
-    // 如果硬件侧太卡，可以改成 0.03 或 0.05。
-    [SerializeField] private float minSendIntervalSec = 0f;
+    public const string Touch = "EVT_TOUCH";
 
-    // 避免同一个值重复发送太多次。
-    [SerializeField] private float minValueDelta = 0.001f;
+    public const string CloseModeStatus = "close_mode_sts";
+    public const string HalfModeStatus = "half_mode_sts";
+    public const string FullModeStatus = "full_mode_sts";
+    public const string OtherModeStatus = "other_mode_sts";
 
-    // 松手时再补发最终值。
-    [SerializeField] private bool sendOnDragEnded = true;
-
-    [Header("Debug")]
-    [SerializeField] private bool logSend = true;
-
-    private float latestValue;
-    private float lastSentValue = -999f;
-    private float lastSendTime = -999f;
-    private bool hasSentValue;
-    private Coroutine delayedSendCoroutine;
-
-    private void Awake()
+    public static bool EqualsType(string actual, string expected)
     {
-        ResolveReferences();
-
-        if (sliderValue != null)
+        if (string.IsNullOrEmpty(actual) || string.IsNullOrEmpty(expected))
         {
-            latestValue = Mathf.Clamp01(sliderValue.Value);
+            return false;
         }
+
+        return actual.Trim().ToLowerInvariant() == expected.Trim().ToLowerInvariant();
     }
 
-    private void OnDisable()
+    public static bool IsMechaStatus(string messageType)
     {
-        if (delayedSendCoroutine != null)
-        {
-            StopCoroutine(delayedSendCoroutine);
-            delayedSendCoroutine = null;
-        }
-    }
-
-    /// <summary>
-    /// Slider drag 中に呼ばれる。
-    /// UnityEvent の float 引数が Static 0 になる場合があるため、
-    /// 渡された value は使わず、HorizontalSliderValue.Value を直接読む。
-    /// </summary>
-    public void OnSliderValueChanged(float ignoredValue)
-    {
-        if (!sendWhileChanging)
-        {
-            return;
-        }
-
-        SendCurrentValue("ValueChanged", false);
-    }
-
-    /// <summary>
-    /// Drag 終了時に最終値を必ず送る。
-    /// </summary>
-    public void OnSliderDragEnded()
-    {
-        if (!sendOnDragEnded)
-        {
-            return;
-        }
-
-        SendCurrentValue("DragEnded", true);
-    }
-
-    /// <summary>
-    /// +/- Button または StepController から呼ぶ。
-    /// StepController の更新完了を待つため、次フレームで現在値を読む。
-    /// </summary>
-    public void SendValueImmediately(float ignoredValue)
-    {
-        RequestSendCurrentValueNextFrame("StepButton");
-    }
-
-    /// <summary>
-    /// Button OnClick など、float を渡せない場合はこちらを使う。
-    /// </summary>
-    public void SendCurrentValueAfterStepButton()
-    {
-        RequestSendCurrentValueNextFrame("StepButton");
-    }
-
-    public void SendCurrentValue()
-    {
-        SendCurrentValue("Manual", true);
-    }
-
-    private void SendCurrentValue(string reason, bool forceSend)
-    {
-        ResolveReferences();
-
-        if (sliderValue == null)
-        {
-            Debug.LogWarning("[Lighting Slider CMD] SliderValue is not assigned. object=" + gameObject.name);
-            return;
-        }
-
-        latestValue = Mathf.Clamp01(sliderValue.Value);
-        SendValue(latestValue, reason, forceSend);
-    }
-
-    private void RequestSendCurrentValueNextFrame(string reason)
-    {
-        if (delayedSendCoroutine != null)
-        {
-            StopCoroutine(delayedSendCoroutine);
-        }
-
-        delayedSendCoroutine = StartCoroutine(SendCurrentValueNextFrame(reason));
-    }
-
-    private IEnumerator SendCurrentValueNextFrame(string reason)
-    {
-        // StepController / HorizontalSliderValue の更新完了を待つ。
-        yield return null;
-
-        delayedSendCoroutine = null;
-        SendCurrentValue(reason, true);
-    }
-
-    private bool CanSendRealtime(float value)
-    {
-        if (minSendIntervalSec > 0f)
-        {
-            if (Time.unscaledTime - lastSendTime < minSendIntervalSec)
-            {
-                return false;
-            }
-        }
-
-        if (hasSentValue)
-        {
-            if (Mathf.Abs(value - lastSentValue) < minValueDelta)
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    private void SendValue(float value, string reason, bool forceSend)
-    {
-        ResolveReferences();
-
-        value = Mathf.Clamp01(value);
-
-        if (!forceSend && !CanSendRealtime(value))
-        {
-            return;
-        }
-
-        if (commandBridge == null)
-        {
-            Debug.LogWarning("[Lighting Slider CMD] CommandBridge is not assigned. object=" + gameObject.name);
-            return;
-        }
-
-        lastSendTime = Time.unscaledTime;
-        lastSentValue = value;
-        hasSentValue = true;
-
-        if (logSend)
-        {
-            Debug.Log(
-                "[Lighting Slider CMD] object="
-                + gameObject.name
-                + " type="
-                + commandType
-                + " value="
-                + value.ToString("0.###")
-                + " reason="
-                + reason
-            );
-        }
-
-        if (commandType == LightingSliderCommandType.Brightness)
-        {
-            commandBridge.SendLightingBrightnessCommand(value);
-            return;
-        }
-
-        commandBridge.SendLightingSaturationCommand(value);
-    }
-
-    private void ResolveReferences()
-    {
-        if (sliderValue == null)
-        {
-            sliderValue = GetComponent<HorizontalSliderValue>();
-        }
-
-        if (commandBridge == null)
-        {
-            commandBridge = FindFirstObjectByType<KinemaCommandBridge>();
-        }
+        return EqualsType(messageType, CloseModeStatus)
+            || EqualsType(messageType, HalfModeStatus)
+            || EqualsType(messageType, FullModeStatus)
+            || EqualsType(messageType, OtherModeStatus);
     }
 }
