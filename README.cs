@@ -1,19 +1,52 @@
-@echo off
-setlocal enabledelayedexpansion
+public static class GuiEventType
+{
+    public const string IgOn = "EVT_IG_ON";
+    public const string IgOff = "EVT_IG_OFF";
 
-REM 输出文件夹
-set "OUTPUT_DIR=rotated"
+    // Backend側の短縮表記も受ける。
+    public const string IgOnShort = "IG_ON";
+    public const string IgOffShort = "IG_OFF";
 
-REM 如果输出文件夹不存在，就创建
-if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
+    public const string ShifterChanged = "EVT_SHIFTER_CHANGED";
 
-REM 遍历当前文件夹下所有 mp4 文件
-for %%F in (*.mp4) do (
-    echo Processing: %%F
+    public const string HvacPopup = "EVT_HVAC_POPUP";
+    public const string HvacDisplayModeResult = "EVT_HVAC_DISPLAY_MODE_RESULT";
 
-    REM 输出文件名：rotated_原文件名
-    ffmpeg -y -i "%%F" -vf "hflip,vflip" -c:v libx264 -crf 18 -preset medium -c:a copy "%OUTPUT_DIR%\rotated_%%F"
-)
+    public const string MediaVolumeUp = "EVT_MEDIA_VOLUME_UP";
+    public const string MediaVolumeDown = "EVT_MEDIA_VOLUME_DOWN";
 
-echo Done.
-pause
+    public const string Touch = "EVT_TOUCH";
+
+    public const string CloseModeStatus = "close_mode_sts";
+    public const string HalfModeStatus = "half_mode_sts";
+    public const string FullModeStatus = "full_mode_sts";
+    public const string OtherModeStatus = "other_mode_sts";
+
+    public static bool EqualsType(string actual, string expected)
+    {
+        if (string.IsNullOrEmpty(actual) || string.IsNullOrEmpty(expected))
+        {
+            return false;
+        }
+
+        return actual.Trim().ToLowerInvariant() == expected.Trim().ToLowerInvariant();
+    }
+
+    public static bool IsIgOn(string messageType)
+    {
+        return EqualsType(messageType, IgOn) || EqualsType(messageType, IgOnShort);
+    }
+
+    public static bool IsIgOff(string messageType)
+    {
+        return EqualsType(messageType, IgOff) || EqualsType(messageType, IgOffShort);
+    }
+
+    public static bool IsMechaStatus(string messageType)
+    {
+        return EqualsType(messageType, CloseModeStatus)
+            || EqualsType(messageType, HalfModeStatus)
+            || EqualsType(messageType, FullModeStatus)
+            || EqualsType(messageType, OtherModeStatus);
+    }
+}
