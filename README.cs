@@ -1,27 +1,19 @@
-using UnityEngine;
+@echo off
+setlocal enabledelayedexpansion
 
-public class MultiDisplayActivator : MonoBehaviour
-{
-    [SerializeField] private bool activateOnStart = true;
+REM 输出文件夹
+set "OUTPUT_DIR=rotated"
 
-    private void Start()
-    {
-        if (!activateOnStart)
-        {
-            return;
-        }
+REM 如果输出文件夹不存在，就创建
+if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
 
-        ActivateDisplays();
-    }
+REM 遍历当前文件夹下所有 mp4 文件
+for %%F in (*.mp4) do (
+    echo Processing: %%F
 
-    public void ActivateDisplays()
-    {
-        for (int i = 1; i < Display.displays.Length; i++)
-        {
-            Display.displays[i].Activate();
-            Debug.Log("[Display] Activated Display " + (i + 1));
-        }
+    REM 输出文件名：rotated_原文件名
+    ffmpeg -y -i "%%F" -vf "hflip,vflip" -c:v libx264 -crf 18 -preset medium -c:a copy "%OUTPUT_DIR%\rotated_%%F"
+)
 
-        Debug.Log("[Display] Display count = " + Display.displays.Length);
-    }
-}
+echo Done.
+pause
