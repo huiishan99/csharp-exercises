@@ -1,571 +1,339 @@
-using System.Collections.Generic;
-using UnityEngine;
-using UnityEngine.EventSystems;
-using UnityEngine.UI;
+import socket
+import threading
+import json
+import time
+from typing import List, Tuple
 
-public class OledTouchPointerBridge : MonoBehaviour
-{
-    private sealed class PointerState
-    {
-        public int pointerId;
-        public PointerEventData eventData;
-        public GameObject currentOverObject;
-        public GameObject pointerPress;
-        public GameObject rawPointerPress;
-        public GameObject pointerDrag;
-        public bool isPressed;
-        public bool isDragging;
-        public Vector2 lastScreenPosition;
-    }
+BIND_HOST = "0.0.0.0"
+PORT = 5001
 
-    [Header("Event")]
-    [SerializeField] private GuiEventDispatcher eventDispatcher;
 
-    [Header("Canvas / Camera")]
-    [SerializeField] private Canvas displayCanvas;
-    [SerializeField] private RectTransform touchSurfaceRect;
-    [SerializeField] private Camera raycastCamera;
-    [SerializeField] private bool assignCanvasEventCamera = true;
+class GuiEventMockServer:
+    def __init__(self, host: str, port: int):
+        self.host = host
+        self.port = port
+        self.running = True
+        self.server_socket = None
+        self.clients: List[Tuple[socket.socket, Tuple[str, int]]] = []
+        self.clients_lock = threading.Lock()
 
-    [Header("OLED Layout")]
-    [SerializeField] private float driverWidth = 2650f;
-    [SerializeField] private float passengerOffsetX = 2650f;
-    [SerializeField] private bool yOriginTop = true;
-    [SerializeField] private bool clampCoordinate = true;
+    def start(self):
+        server_thread = threading.Thread(target=self._run_server, daemon=True)
+        server_thread.start()
 
-    [Header("Pointer")]
-    [SerializeField] private bool enablePointerEvents = false;
-    [SerializeField] private int driverPointerId = 1001;
-    [SerializeField] private int passengerPointerId = 1002;
-    [SerializeField] private float dragThresholdPixels = 8f;
+        print("[GuiEventMockServer] Started.")
+        print(f"[GuiEventMockServer] Listening target: {self.host}:{self.port}")
+        print("[GuiEventMockServer] Commands:")
+        print("  ig_on")
+        print("  ig_off")
+        print("  p / d / r")
+        print("  hvac")
+        print("  volup / voldown")
+        print("  half_sts / full_sts / close_sts / other_sts")
+        print("")
+        print("Touch:")
+        print("  td x y source       -> touch down")
+        print("  tm x y source       -> touch move")
+        print("  tu x y source       -> touch up")
+        print("  tap x y source      -> touch tap")
+        print("  drag x1 y1 x2 y2 source")
+        print("")
+        print("Samples:")
+        print("  touchd / touchp")
+        print("  dragd / dragp")
+        print("  clients")
+        print("  q")
 
-    [Header("Debug")]
-    [SerializeField] private bool logTouch = true;
-    [SerializeField] private bool logRaycastHit = true;
-    [SerializeField] private bool logPointerEvent = true;
+        self._run_console_loop()
 
-    private readonly List<RaycastResult> raycastResults = new List<RaycastResult>();
+    def _run_server(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
+            self.server_socket = server_socket
+            server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server_socket.bind((self.host, self.port))
+            server_socket.listen(8)
 
-    private PointerState driverPointer;
-    private PointerState passengerPointer;
+            print(f"[GuiEventMockServer] Listening on {self.host}:{self.port}")
 
-    private void Awake()
-    {
-        ResolveReferences();
-        InitializePointerStates();
-        ApplyCanvasEventCamera();
-    }
+            while self.running:
+                try:
+                    client_socket, address = server_socket.accept()
+                    client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 
-    private void OnEnable()
-    {
-        ResolveReferences();
-        InitializePointerStates();
-        ApplyCanvasEventCamera();
+                    with self.clients_lock:
+                        self.clients.append((client_socket, address))
 
-        if (eventDispatcher != null)
-        {
-            eventDispatcher.TouchReceived -= OnTouchReceived;
-            eventDispatcher.TouchReceived += OnTouchReceived;
-        }
-    }
+                    print(f"[GuiEventMockServer] Unity connected: {address}")
+                except OSError:
+                    break
 
-    private void OnDisable()
-    {
-        if (eventDispatcher != null)
-        {
-            eventDispatcher.TouchReceived -= OnTouchReceived;
-        }
+    def _run_console_loop(self):
+        while self.running:
+            try:
+                command = input("> ").strip()
+            except EOFError:
+                break
+            except KeyboardInterrupt:
+                self.running = False
+                self._close_all_clients()
+                self._close_server_socket()
+                break
 
-        ResetPointerState(driverPointer);
-        ResetPointerState(passengerPointer);
-    }
+            if not command:
+                continue
 
-    private void OnTouchReceived(GuiEventMessage message)
-    {
-        if (message == null || message.TouchPayload == null)
-        {
-            Debug.LogWarning("[OLED Pointer] Touch payload is null.");
-            return;
-        }
+            if command == "q":
+                self.running = False
+                self._close_all_clients()
+                self._close_server_socket()
+                break
 
-        GuiEventTouchPayload payload = message.TouchPayload;
+            if command == "clients":
+                self._print_clients()
+                continue
 
-        string sourceText = NormalizeText(payload.source);
-        string eventText = NormalizeText(payload.GetTouchEventText());
+            self._handle_command(command)
 
-        PointerState pointerState = GetPointerState(sourceText);
+    def _handle_command(self, command: str):
+        if command == "ig_on":
+            self.send_event("IG_ON", {})
+            return
 
-        if (pointerState == null)
-        {
-            Debug.LogWarning("[OLED Pointer] Unknown source: " + payload.source);
-            return;
-        }
+        if command == "ig_off":
+            self.send_event("IG_OFF", {})
+            return
 
-        if (!TryConvertToScreenPoint(payload, sourceText, out Vector2 screenPoint, out Vector2 localPoint))
-        {
-            Debug.LogWarning("[OLED Pointer] Failed to convert touch coordinate.");
-            return;
-        }
+        if command == "p":
+            self.send_event("EVT_SHIFTER_CHANGED", {"gear": "parking"})
+            return
 
-        if (logTouch)
-        {
-            Debug.Log(
-                "[OLED Pointer] source="
-                + sourceText
-                + " event="
-                + eventText
-                + " touch=("
-                + payload.x
-                + ", "
-                + payload.y
-                + ") local="
-                + localPoint
-                + " screen="
-                + screenPoint
-            );
-        }
+        if command == "d":
+            self.send_event("EVT_SHIFTER_CHANGED", {"gear": "drive"})
+            return
 
-        GameObject hitObject = RaycastTop(screenPoint, out RaycastResult topResult);
+        if command == "r":
+            self.send_event("EVT_SHIFTER_CHANGED", {"gear": "reverse"})
+            return
 
-        if (logRaycastHit)
-        {
-            string hitName = hitObject == null ? "None" : GetHierarchyPath(hitObject);
-            Debug.Log("[OLED Pointer Raycast] hit=" + hitName);
-        }
+        if command == "hvac":
+            self.send_event("EVT_HVAC_POPUP", {})
+            return
 
-        if (!enablePointerEvents)
-        {
-            return;
-        }
+        if command == "volup":
+            self.send_event("EVT_MEDIA_VOLUME_UP", {})
+            return
 
-        if (eventText == "down")
-        {
-            HandlePointerDown(pointerState, screenPoint, topResult);
-            return;
-        }
+        if command == "voldown":
+            self.send_event("EVT_MEDIA_VOLUME_DOWN", {})
+            return
 
-        if (eventText == "move")
-        {
-            HandlePointerMove(pointerState, screenPoint, topResult);
-            return;
-        }
+        if command == "half_sts":
+            self.send_event("half_mode_sts", {})
+            return
 
-        if (eventText == "up")
-        {
-            HandlePointerUp(pointerState, screenPoint, topResult);
-            return;
-        }
+        if command == "full_sts":
+            self.send_event("full_mode_sts", {})
+            return
 
-        Debug.LogWarning("[OLED Pointer] Unknown touch event: " + payload.GetTouchEventText());
-    }
+        if command == "close_sts":
+            self.send_event("close_mode_sts", {})
+            return
 
-    private bool TryConvertToScreenPoint(
-        GuiEventTouchPayload payload,
-        string normalizedSource,
-        out Vector2 screenPoint,
-        out Vector2 localPoint
-    )
-    {
-        screenPoint = Vector2.zero;
-        localPoint = Vector2.zero;
+        if command == "other_sts":
+            self.send_event("other_mode_sts", {})
+            return
 
-        if (touchSurfaceRect == null || raycastCamera == null)
-        {
-            return false;
-        }
+        if command == "touchd":
+            self._send_tap(115, 300, "driver")
+            return
 
-        Rect rect = touchSurfaceRect.rect;
+        if command == "touchp":
+            self._send_tap(300, 300, "passenger")
+            return
 
-        float x = payload.x;
-        float y = payload.y;
+        if command == "dragd":
+            self._send_drag(200, 300, 700, 300, "driver")
+            return
 
-        float activeHeight = rect.height;
+        if command == "dragp":
+            self._send_drag(200, 300, 700, 300, "passenger")
+            return
 
-        if (clampCoordinate)
-        {
-            x = Mathf.Clamp(x, 0f, driverWidth);
-            y = Mathf.Clamp(y, 0f, activeHeight);
-        }
+        parts = command.split()
 
-        float globalX = x;
+        if len(parts) == 4 and parts[0] in ("td", "tm", "tu"):
+            self._handle_single_touch_command(parts)
+            return
 
-        if (normalizedSource == "passenger")
-        {
-            globalX = passengerOffsetX + x;
+        if len(parts) == 4 and parts[0] == "tap":
+            self._handle_tap_command(parts)
+            return
+
+        if len(parts) == 6 and parts[0] == "drag":
+            self._handle_drag_command(parts)
+            return
+
+        print("[GuiEventMockServer] Unknown command.")
+
+    def _handle_single_touch_command(self, parts):
+        key = parts[0]
+        x_text = parts[1]
+        y_text = parts[2]
+        source = parts[3]
+
+        event_map = {
+            "td": "down",
+            "tm": "move",
+            "tu": "up",
         }
 
-        float localX = rect.xMin + globalX;
-        float localY = yOriginTop
-            ? rect.yMax - y
-            : rect.yMin + y;
+        if source not in ("driver", "passenger"):
+            print("[GuiEventMockServer] source must be driver or passenger.")
+            return
 
-        localPoint = new Vector2(localX, localY);
+        try:
+            x = int(x_text)
+            y = int(y_text)
+        except ValueError:
+            print("[GuiEventMockServer] x/y must be int.")
+            return
 
-        Vector3 worldPoint = touchSurfaceRect.TransformPoint(new Vector3(localX, localY, 0f));
-        screenPoint = RectTransformUtility.WorldToScreenPoint(raycastCamera, worldPoint);
+        self.send_touch(x, y, event_map[key], source)
 
-        return true;
-    }
+    def _handle_tap_command(self, parts):
+        try:
+            x = int(parts[1])
+            y = int(parts[2])
+        except ValueError:
+            print("[GuiEventMockServer] x/y must be int.")
+            return
 
-    private GameObject RaycastTop(Vector2 screenPoint, out RaycastResult topResult)
-    {
-        topResult = new RaycastResult();
+        source = parts[3]
 
-        EventSystem eventSystem = EventSystem.current;
+        if source not in ("driver", "passenger"):
+            print("[GuiEventMockServer] source must be driver or passenger.")
+            return
 
-        if (eventSystem == null)
-        {
-            Debug.LogWarning("[OLED Pointer] EventSystem.current is null.");
-            return null;
+        self._send_tap(x, y, source)
+
+    def _handle_drag_command(self, parts):
+        try:
+            x1 = int(parts[1])
+            y1 = int(parts[2])
+            x2 = int(parts[3])
+            y2 = int(parts[4])
+        except ValueError:
+            print("[GuiEventMockServer] x/y must be int.")
+            return
+
+        source = parts[5]
+
+        if source not in ("driver", "passenger"):
+            print("[GuiEventMockServer] source must be driver or passenger.")
+            return
+
+        self._send_drag(x1, y1, x2, y2, source)
+
+    def _send_tap(self, x: int, y: int, source: str):
+        self.send_touch(x, y, "down", source)
+        time.sleep(0.05)
+        self.send_touch(x, y, "up", source)
+
+    def _send_drag(self, start_x: int, start_y: int, end_x: int, end_y: int, source: str):
+        steps = 12
+
+        self.send_touch(start_x, start_y, "down", source)
+        time.sleep(0.02)
+
+        for i in range(1, steps):
+            rate = i / steps
+            x = int(start_x + (end_x - start_x) * rate)
+            y = int(start_y + (end_y - start_y) * rate)
+
+            self.send_touch(x, y, "move", source)
+            time.sleep(0.02)
+
+        self.send_touch(end_x, end_y, "up", source)
+
+    def send_touch(self, x: int, y: int, event_type: str, source: str):
+        self.send_event("EVT_TOUCH", {
+            "source": source,
+            "x": x,
+            "y": y,
+            "event": event_type
+        })
+
+    def send_event(self, message_type: str, payload: dict):
+        message = {
+            "message_type": message_type,
+            "payload": payload,
         }
 
-        PointerEventData tempEventData = new PointerEventData(eventSystem);
-        tempEventData.position = screenPoint;
-
-        raycastResults.Clear();
-        eventSystem.RaycastAll(tempEventData, raycastResults);
-
-        if (raycastResults.Count == 0)
-        {
-            return null;
-        }
-
-        topResult = raycastResults[0];
-        return topResult.gameObject;
-    }
-
-    private void HandlePointerDown(
-        PointerState state,
-        Vector2 screenPoint,
-        RaycastResult raycastResult
-    )
-    {
-        EventSystem eventSystem = EventSystem.current;
-
-        if (eventSystem == null)
-        {
-            return;
-        }
-
-        ResetPointerState(state);
-
-        PointerEventData eventData = new PointerEventData(eventSystem);
-        eventData.pointerId = state.pointerId;
-        eventData.button = PointerEventData.InputButton.Left;
-        eventData.position = screenPoint;
-        eventData.pressPosition = screenPoint;
-        eventData.delta = Vector2.zero;
-        eventData.clickTime = Time.unscaledTime;
-        eventData.clickCount = 1;
-        eventData.pointerCurrentRaycast = raycastResult;
-        eventData.pointerPressRaycast = raycastResult;
-        eventData.useDragThreshold = true;
-
-        GameObject currentOver = raycastResult.gameObject;
-
-        state.eventData = eventData;
-        state.currentOverObject = currentOver;
-        state.lastScreenPosition = screenPoint;
-        state.isPressed = true;
-
-        if (currentOver == null)
-        {
-            LogPointer("Down hit none.");
-            return;
-        }
-
-        GameObject pointerPress = ExecuteEvents.ExecuteHierarchy(
-            currentOver,
-            eventData,
-            ExecuteEvents.pointerDownHandler
-        );
-
-        if (pointerPress == null)
-        {
-            pointerPress = ExecuteEvents.GetEventHandler<IPointerClickHandler>(currentOver);
-        }
-
-        GameObject pointerDrag = ExecuteEvents.GetEventHandler<IDragHandler>(currentOver);
-
-        eventData.pointerPress = pointerPress;
-        eventData.rawPointerPress = currentOver;
-        eventData.pointerDrag = pointerDrag;
-
-        state.pointerPress = pointerPress;
-        state.rawPointerPress = currentOver;
-        state.pointerDrag = pointerDrag;
-
-        if (pointerDrag != null)
-        {
-            ExecuteEvents.Execute(
-                pointerDrag,
-                eventData,
-                ExecuteEvents.initializePotentialDrag
-            );
-        }
-
-        LogPointer(
-            "Down current="
-            + GetObjectName(currentOver)
-            + " press="
-            + GetObjectName(pointerPress)
-            + " drag="
-            + GetObjectName(pointerDrag)
-        );
-    }
-
-    private void HandlePointerMove(
-        PointerState state,
-        Vector2 screenPoint,
-        RaycastResult raycastResult
-    )
-    {
-        if (state == null || !state.isPressed || state.eventData == null)
-        {
-            return;
-        }
-
-        PointerEventData eventData = state.eventData;
-
-        Vector2 delta = screenPoint - state.lastScreenPosition;
-
-        eventData.position = screenPoint;
-        eventData.delta = delta;
-        eventData.pointerCurrentRaycast = raycastResult;
-
-        state.currentOverObject = raycastResult.gameObject;
-
-        if (state.pointerDrag != null)
-        {
-            if (!state.isDragging)
-            {
-                float movedDistance = Vector2.Distance(eventData.pressPosition, eventData.position);
-
-                if (movedDistance >= dragThresholdPixels)
-                {
-                    ExecuteEvents.Execute(
-                        state.pointerDrag,
-                        eventData,
-                        ExecuteEvents.beginDragHandler
-                    );
-
-                    eventData.dragging = true;
-                    state.isDragging = true;
-
-                    LogPointer("BeginDrag target=" + GetObjectName(state.pointerDrag));
-                }
-            }
-
-            if (state.isDragging)
-            {
-                ExecuteEvents.Execute(
-                    state.pointerDrag,
-                    eventData,
-                    ExecuteEvents.dragHandler
-                );
-            }
-        }
-
-        state.lastScreenPosition = screenPoint;
-    }
-
-    private void HandlePointerUp(
-        PointerState state,
-        Vector2 screenPoint,
-        RaycastResult raycastResult
-    )
-    {
-        if (state == null || !state.isPressed || state.eventData == null)
-        {
-            return;
-        }
-
-        PointerEventData eventData = state.eventData;
-
-        eventData.position = screenPoint;
-        eventData.delta = screenPoint - state.lastScreenPosition;
-        eventData.pointerCurrentRaycast = raycastResult;
-
-        GameObject currentOver = raycastResult.gameObject;
-
-        if (state.pointerPress != null)
-        {
-            ExecuteEvents.Execute(
-                state.pointerPress,
-                eventData,
-                ExecuteEvents.pointerUpHandler
-            );
-        }
-
-        GameObject clickHandler = currentOver == null
-            ? null
-            : ExecuteEvents.GetEventHandler<IPointerClickHandler>(currentOver);
-
-        if (!state.isDragging && state.pointerPress != null && state.pointerPress == clickHandler)
-        {
-            ExecuteEvents.Execute(
-                state.pointerPress,
-                eventData,
-                ExecuteEvents.pointerClickHandler
-            );
-
-            LogPointer("Click target=" + GetObjectName(state.pointerPress));
-        }
-
-        if (state.isDragging && state.pointerDrag != null)
-        {
-            ExecuteEvents.Execute(
-                state.pointerDrag,
-                eventData,
-                ExecuteEvents.endDragHandler
-            );
-
-            LogPointer("EndDrag target=" + GetObjectName(state.pointerDrag));
-        }
-
-        ResetPointerState(state);
-    }
-
-    private void ResetPointerState(PointerState state)
-    {
-        if (state == null)
-        {
-            return;
-        }
-
-        state.eventData = null;
-        state.currentOverObject = null;
-        state.pointerPress = null;
-        state.rawPointerPress = null;
-        state.pointerDrag = null;
-        state.isPressed = false;
-        state.isDragging = false;
-        state.lastScreenPosition = Vector2.zero;
-    }
-
-    private PointerState GetPointerState(string source)
-    {
-        if (source == "driver")
-        {
-            return driverPointer;
-        }
-
-        if (source == "passenger")
-        {
-            return passengerPointer;
-        }
-
-        return null;
-    }
-
-    private void InitializePointerStates()
-    {
-        if (driverPointer == null)
-        {
-            driverPointer = new PointerState
-            {
-                pointerId = driverPointerId
-            };
-        }
-
-        if (passengerPointer == null)
-        {
-            passengerPointer = new PointerState
-            {
-                pointerId = passengerPointerId
-            };
-        }
-    }
-
-    private void ResolveReferences()
-    {
-        if (eventDispatcher == null)
-        {
-            eventDispatcher = FindFirstObjectByType<GuiEventDispatcher>();
-        }
-
-        if (displayCanvas == null)
-        {
-            displayCanvas = FindFirstObjectByType<Canvas>();
-        }
-
-        if (raycastCamera == null && displayCanvas != null)
-        {
-            raycastCamera = displayCanvas.worldCamera;
-        }
-
-        if (raycastCamera == null)
-        {
-            raycastCamera = Camera.main;
-        }
-
-        if (touchSurfaceRect == null && displayCanvas != null)
-        {
-            touchSurfaceRect = displayCanvas.GetComponent<RectTransform>();
-        }
-    }
-
-    private void ApplyCanvasEventCamera()
-    {
-        if (!assignCanvasEventCamera)
-        {
-            return;
-        }
-
-        if (displayCanvas == null || raycastCamera == null)
-        {
-            return;
-        }
-
-        displayCanvas.worldCamera = raycastCamera;
-    }
-
-    private string NormalizeText(string value)
-    {
-        if (string.IsNullOrEmpty(value))
-        {
-            return "";
-        }
-
-        return value.Trim().ToLowerInvariant().Replace("_", "").Replace("-", "");
-    }
-
-    private void LogPointer(string message)
-    {
-        if (!logPointerEvent)
-        {
-            return;
-        }
-
-        Debug.Log("[OLED Pointer] " + message);
-    }
-
-    private string GetObjectName(GameObject target)
-    {
-        if (target == null)
-        {
-            return "None";
-        }
-
-        return target.name;
-    }
-
-    private string GetHierarchyPath(GameObject target)
-    {
-        if (target == null)
-        {
-            return "None";
-        }
-
-        string path = target.name;
-        Transform current = target.transform.parent;
-
-        while (current != null)
-        {
-            path = current.name + "/" + path;
-            current = current.parent;
-        }
-
-        return path;
-    }
-}
+        text = json.dumps(message, separators=(",", ":")) + "\n"
+        data = text.encode("utf-8")
+
+        removed_clients = []
+
+        with self.clients_lock:
+            if len(self.clients) == 0:
+                print("[GuiEventMockServer] No Unity client connected.")
+                return
+
+            for client_socket, address in self.clients:
+                try:
+                    client_socket.sendall(data)
+                    print(f"[GuiEventMockServer] Sent to {address}: {text.strip()}")
+                except OSError as error:
+                    print(f"[GuiEventMockServer] Send failed to {address}: {error}")
+                    removed_clients.append((client_socket, address))
+
+            for client in removed_clients:
+                self._remove_client_without_lock(client)
+
+    def _print_clients(self):
+        with self.clients_lock:
+            if len(self.clients) == 0:
+                print("[GuiEventMockServer] No connected clients.")
+                return
+
+            print("[GuiEventMockServer] Connected clients:")
+
+            for index, (_, address) in enumerate(self.clients):
+                print(f"  {index}: {address}")
+
+    def _remove_client_without_lock(self, client_entry):
+        client_socket, address = client_entry
+
+        try:
+            client_socket.close()
+        except OSError:
+            pass
+
+        if client_entry in self.clients:
+            self.clients.remove(client_entry)
+
+        print(f"[GuiEventMockServer] Removed client: {address}")
+
+    def _close_all_clients(self):
+        with self.clients_lock:
+            for client_socket, _ in self.clients:
+                try:
+                    client_socket.close()
+                except OSError:
+                    pass
+
+            self.clients.clear()
+
+    def _close_server_socket(self):
+        if self.server_socket is None:
+            return
+
+        try:
+            self.server_socket.close()
+        except OSError:
+            pass
+
+
+if __name__ == "__main__":
+    server = GuiEventMockServer(BIND_HOST, PORT)
+    server.start()
