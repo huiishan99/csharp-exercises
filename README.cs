@@ -1,102 +1,123 @@
-using System.Globalization;
+using UnityEngine;
 
-public static class GuiCommandFactory
+public class KinemaCommandBridge : MonoBehaviour
 {
-    public const string FullModeCommand = "full_mode_cmd";
-    public const string HalfModeCommand = "half_mode_cmd";
-    public const string CloseModeCommand = "close_mode_cmd";
+    [SerializeField] private GuiCommandTcpClientSender commandSender;
 
-    public const string StartLedPresetCommand = "CMD_START_LED_PRESET";
-    public const string SetLedBrightnessCommand = "CMD_SET_LED_BRIGHTNESS";
-    public const string SetLedSaturationCommand = "CMD_SET_LED_SATURATION";
+    [Header("Audio Command")]
+    [SerializeField] private bool sendAudioOutputCommand = true;
+    [SerializeField] private string audioOutputCommandName = GuiCommandFactory.SetAudioOutputStateCommand;
 
-    public const string SetHvacVibrationCommand = "CMD_SET_HVAC_VIBRATION";
-    public const string SetHvacSoundCommand = "CMD_SET_HVAC_SOUND";
-
-    // 暫定Command。正式名が決まったらここだけ変更する。
-    public const string SetAudioOutputStateCommand = "CMD_SET_AUDIO_OUTPUT_STATE";
-
-    public static string CreateCommand(string messageType)
+    private void Awake()
     {
-        return CreateCommand(messageType, "{}");
+        ResolveReferences();
     }
 
-    public static string CreateCommand(string messageType, string payloadJson)
+    public void SendFullModeCommand()
     {
-        if (string.IsNullOrEmpty(payloadJson))
+        SendCommand(GuiCommandFactory.FullModeCommand);
+    }
+
+    public void SendHalfModeCommand()
+    {
+        SendCommand(GuiCommandFactory.HalfModeCommand);
+    }
+
+    public void SendCloseModeCommand()
+    {
+        SendCommand(GuiCommandFactory.CloseModeCommand);
+    }
+
+    public void SendLightingPresetCommand(int index)
+    {
+        string payload = GuiCommandFactory.CreateIndexPayload("index", index);
+        SendCommand(GuiCommandFactory.StartLedPresetCommand, payload);
+    }
+
+    public void SendLightingBrightnessCommand(float brightness)
+    {
+        string payload = GuiCommandFactory.CreateFloatPayload(
+            "brightness",
+            Mathf.Clamp01(brightness)
+        );
+
+        SendCommand(GuiCommandFactory.SetLedBrightnessCommand, payload);
+    }
+
+    public void SendLightingSaturationCommand(float saturation)
+    {
+        string payload = GuiCommandFactory.CreateFloatPayload(
+            "saturation",
+            Mathf.Clamp01(saturation)
+        );
+
+        SendCommand(GuiCommandFactory.SetLedSaturationCommand, payload);
+    }
+
+    public void SendHvacVibrationCommand(int index)
+    {
+        string payload = GuiCommandFactory.CreateIndexPayload("index", index);
+        SendCommand(GuiCommandFactory.SetHvacVibrationCommand, payload);
+    }
+
+    public void SendHvacSoundCommand(int index)
+    {
+        string payload = GuiCommandFactory.CreateIndexPayload("index", index);
+        SendCommand(GuiCommandFactory.SetHvacSoundCommand, payload);
+    }
+
+    public void SendAudioOutputStateCommand(bool leftOn, bool rightOn, float volume)
+    {
+        if (!sendAudioOutputCommand)
         {
-            payloadJson = "{}";
+            return;
         }
 
-        return "{\"message_type\":\""
-            + EscapeJson(messageType)
-            + "\",\"payload\":"
-            + payloadJson
-            + "}";
+        string payload = GuiCommandFactory.CreateAudioOutputStatePayload(
+            leftOn,
+            rightOn,
+            Mathf.Clamp01(volume)
+        );
+
+        SendCommand(audioOutputCommandName, payload);
     }
 
-    public static string CreateIndexPayload(string key, int value)
+    private void SendCommand(string messageType)
     {
-        return "{\"" + EscapeJson(key) + "\":" + value + "}";
-    }
+        ResolveReferences();
 
-    public static string CreateFloatPayload(string key, float value)
-    {
-        return "{\""
-            + EscapeJson(key)
-            + "\":"
-            + FloatToJson(value)
-            + "}";
-    }
-
-    public static string CreateAudioOutputStatePayload(bool left, bool right, float volume)
-    {
-        return "{\"left\":"
-            + BoolToJson(left)
-            + ",\"right\":"
-            + BoolToJson(right)
-            + ",\"volume\":"
-            + FloatToJson(Clamp01(volume))
-            + "}";
-    }
-
-    private static string BoolToJson(bool value)
-    {
-        return value ? "true" : "false";
-    }
-
-    private static string FloatToJson(float value)
-    {
-        return value.ToString("0.###", CultureInfo.InvariantCulture);
-    }
-
-    private static float Clamp01(float value)
-    {
-        if (value < 0f)
+        if (commandSender == null)
         {
-            return 0f;
+            Debug.LogWarning("[GUI CMD] Command sender is not assigned. message_type=" + messageType);
+            return;
         }
 
-        if (value > 1f)
-        {
-            return 1f;
-        }
-
-        return value;
+        commandSender.SendCommand(messageType);
     }
 
-    private static string EscapeJson(string value)
+    private void SendCommand(string messageType, string payloadJson)
     {
-        if (string.IsNullOrEmpty(value))
+        ResolveReferences();
+
+        if (commandSender == null)
         {
-            return "";
+            Debug.LogWarning("[GUI CMD] Command sender is not assigned. message_type=" + messageType);
+            return;
         }
 
-        return value
-            .Replace("\\", "\\\\")
-            .Replace("\"", "\\\"")
-            .Replace("\n", "\\n")
-            .Replace("\r", "\\r")
-            .Replace("\t", "\\t");
+        commandSender.SendCommand(messageType, payloadJson);
+    }
+
+    private void ResolveReferences()
+    {
+        if (commandSender == null)
+        {
+            commandSender = GetComponent<GuiCommandTcpClientSender>();
+        }
+
+        if (commandSender == null)
+        {
+            commandSender = FindFirstObjectByType<GuiCommandTcpClientSender>();
+        }
     }
 }
