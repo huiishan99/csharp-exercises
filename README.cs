@@ -1,127 +1,106 @@
-using System;
-using System.Collections;
 using UnityEngine;
-using UnityEngine.UI;
 
-namespace PushButtonSliderLite
+public class CanvasEventCameraSwitcher : MonoBehaviour
 {
-    [DisallowMultipleComponent]
-    public sealed class ThemeSpriteApplier : MonoBehaviour
+    [SerializeField] private Canvas targetCanvas;
+    [SerializeField] private KinemaMockDisplayController displayController;
+
+    [Header("Event Cameras")]
+    [SerializeField] private Camera driverEventCamera;
+    [SerializeField] private Camera passengerEventCamera;
+    [SerializeField] private Camera fallbackEventCamera;
+
+    [Header("Update")]
+    [SerializeField] private bool updateEveryFrame = true;
+    [SerializeField] private bool logSwitch = true;
+
+    private Camera currentCamera;
+
+    private void Awake()
     {
-        [Serializable]
-        public sealed class ThemeSpriteSet
+        ResolveReferences();
+        ApplyByCurrentMode();
+    }
+
+    private void OnEnable()
+    {
+        ResolveReferences();
+        ApplyByCurrentMode();
+    }
+
+    private void LateUpdate()
+    {
+        if (!updateEveryFrame)
         {
-            public Sprite sliderTrackSprite;
-            public Sprite externalImageSprite;
+            return;
         }
 
-        [Header("主题按钮组")]
-        [SerializeField] private ThemeButtonGroup buttonGroup;
+        ApplyByCurrentMode();
+    }
 
-        [Header("要被替换的 Image")]
-        [SerializeField] private Image sliderTrackImage;
-        [SerializeField] private Image externalImage;
+    public void ApplyByCurrentMode()
+    {
+        ResolveReferences();
 
-        [Header("6组主题 Sprite：顺序对应 0-5")]
-        [SerializeField] private ThemeSpriteSet[] themeSprites = new ThemeSpriteSet[6];
-
-        private Coroutine applyRoutine;
-
-        private void Awake()
+        if (targetCanvas == null)
         {
-            ResolveReferences();
+            return;
         }
 
-        private void OnEnable()
+        Camera nextCamera = GetCameraForCurrentMode();
+
+        if (nextCamera == null)
         {
-            ResolveReferences();
-
-            if (buttonGroup != null)
-            {
-                buttonGroup.onSelectedIndexChanged.RemoveListener(ApplyByIndex);
-                buttonGroup.onSelectedIndexChanged.AddListener(ApplyByIndex);
-            }
-
-            RequestApplyCurrentSelection();
+            return;
         }
 
-        private void OnDisable()
+        if (currentCamera == nextCamera && targetCanvas.worldCamera == nextCamera)
         {
-            if (buttonGroup != null)
-            {
-                buttonGroup.onSelectedIndexChanged.RemoveListener(ApplyByIndex);
-            }
-
-            if (applyRoutine != null)
-            {
-                StopCoroutine(applyRoutine);
-                applyRoutine = null;
-            }
+            return;
         }
 
-        public void ApplyByIndex(int index)
+        currentCamera = nextCamera;
+        targetCanvas.worldCamera = nextCamera;
+
+        if (logSwitch)
         {
-            if (themeSprites == null || index < 0 || index >= themeSprites.Length)
-            {
-                return;
-            }
+            Debug.Log("[CanvasEventCamera] Event Camera = " + nextCamera.name);
+        }
+    }
 
-            ThemeSpriteSet spriteSet = themeSprites[index];
-
-            if (spriteSet == null)
-            {
-                return;
-            }
-
-            if (sliderTrackImage != null && spriteSet.sliderTrackSprite != null)
-            {
-                sliderTrackImage.sprite = spriteSet.sliderTrackSprite;
-            }
-
-            if (externalImage != null && spriteSet.externalImageSprite != null)
-            {
-                externalImage.sprite = spriteSet.externalImageSprite;
-            }
+    private Camera GetCameraForCurrentMode()
+    {
+        if (displayController == null)
+        {
+            return fallbackEventCamera;
         }
 
-        private void RequestApplyCurrentSelection()
+        switch (displayController.CurrentDisplayMode)
         {
-            if (!isActiveAndEnabled)
-            {
-                return;
-            }
+            case KinemaMockDisplayMode.Full:
+                return driverEventCamera != null ? driverEventCamera : fallbackEventCamera;
 
-            if (applyRoutine != null)
-            {
-                StopCoroutine(applyRoutine);
-            }
+            case KinemaMockDisplayMode.Half:
+            case KinemaMockDisplayMode.RearView:
+                return passengerEventCamera != null ? passengerEventCamera : fallbackEventCamera;
 
-            applyRoutine = StartCoroutine(ApplyCurrentSelectionNextFrame());
+            case KinemaMockDisplayMode.Opening:
+            case KinemaMockDisplayMode.Close:
+            default:
+                return fallbackEventCamera != null ? fallbackEventCamera : driverEventCamera;
+        }
+    }
+
+    private void ResolveReferences()
+    {
+        if (targetCanvas == null)
+        {
+            targetCanvas = FindFirstObjectByType<Canvas>();
         }
 
-        private IEnumerator ApplyCurrentSelectionNextFrame()
+        if (displayController == null)
         {
-            yield return null;
-
-            applyRoutine = null;
-
-            if (buttonGroup == null)
-            {
-                yield break;
-            }
-
-            if (buttonGroup.SelectedIndex >= 0)
-            {
-                ApplyByIndex(buttonGroup.SelectedIndex);
-            }
-        }
-
-        private void ResolveReferences()
-        {
-            if (buttonGroup == null)
-            {
-                buttonGroup = GetComponent<ThemeButtonGroup>();
-            }
+            displayController = FindFirstObjectByType<KinemaMockDisplayController>();
         }
     }
 }
