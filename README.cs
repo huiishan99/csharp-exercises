@@ -2,34 +2,42 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.EventSystems;
 
-public class OledTouchPointerBridge : MonoBehaviour
+#if ENABLE_INPUT_SYSTEM
+using UnityEngine.InputSystem;
+#endif
+
+public class OledMouseTouchCoordinateLogger : MonoBehaviour
 {
-    private sealed class PointerState
+    public enum SourceMode
     {
-        public int pointerId;
-        public PointerEventData eventData;
-        public GameObject currentOverObject;
-        public GameObject pointerPress;
-        public GameObject rawPointerPress;
-        public GameObject pointerDrag;
-        public bool isPressed;
-        public bool isDragging;
-        public Vector2 lastScreenPosition;
+        AutoByDisplay,
+        ForceDriver,
+        ForcePassenger
     }
 
-    [Header("Event")]
-    [SerializeField] private GuiEventDispatcher eventDispatcher;
+    private struct TouchCoord
+    {
+        public string source;
+        public int x;
+        public int y;
+        public Vector2 canvasLocal;
+        public Vector2 screenPoint;
+        public GameObject hitObject;
+    }
 
-    [Header("Canvas")]
+    [Header("Source")]
+    [SerializeField] private SourceMode sourceMode = SourceMode.AutoByDisplay;
+    [SerializeField] private SourceMode fallbackSourceMode = SourceMode.ForceDriver;
+
+    [Header("Canvas / Camera")]
     [SerializeField] private Canvas displayCanvas;
     [SerializeField] private RectTransform touchSurfaceRect;
+    [SerializeField] private Camera driverCamera;
+    [SerializeField] private Camera passengerCamera;
 
-    [Header("Raycast Cameras")]
-    [SerializeField] private Camera driverRaycastCamera;
-    [SerializeField] private Camera passengerRaycastCamera;
-
-    [Tooltip("Raycast直前にCanvas.worldCameraをsource別Cameraへ差し替える。")]
-    [SerializeField] private bool setCanvasWorldCameraOnTouch = true;
+    [Header("Raycast")]
+    [SerializeField] private bool raycastHitObject = true;
+    [SerializeField] private bool temporarilySetCanvasCameraForRaycast = true;
 
     [Header("OLED Layout")]
     [SerializeField] private float driverWidth = 2650f;
@@ -37,506 +45,519 @@ public class OledTouchPointerBridge : MonoBehaviour
     [SerializeField] private bool yOriginTop = true;
     [SerializeField] private bool clampCoordinate = true;
 
-    [Header("Pointer")]
-    [SerializeField] private bool enablePointerEvents = false;
-    [SerializeField] private int driverPointerId = 1001;
-    [SerializeField] private int passengerPointerId = 1002;
-    [SerializeField] private float dragThresholdPixels = 8f;
-
-    [Header("Debug")]
-    [SerializeField] private bool logTouch = true;
-    [SerializeField] private bool logRaycastHit = true;
-    [SerializeField] private bool logPointerEvent = true;
+    [Header("Output")]
+    [SerializeField] private bool logMouseDown = true;
+    [SerializeField] private bool logMouseUp = true;
+    [SerializeField] private bool logMouseDragMove = false;
+    [SerializeField] private bool logPythonCommand = true;
+    [SerializeField] private float dragDetectThreshold = 8f;
 
     private readonly List<RaycastResult> raycastResults = new List<RaycastResult>();
 
-    private PointerState driverPointer;
-    private PointerState passengerPointer;
+    private bool isPressed;
+    private TouchCoord downCoord;
+    private TouchCoord latestCoord;
 
     private void Awake()
     {
         ResolveReferences();
-        InitializePointerStates();
     }
 
-    private void OnEnable()
+    private void Update()
     {
         ResolveReferences();
-        InitializePointerStates();
 
-        if (eventDispatcher != null)
+        if (IsMouseDownThisFrame())
         {
-            eventDispatcher.TouchReceived -= OnTouchReceived;
-            eventDispatcher.TouchReceived += OnTouchReceived;
+            HandleMouseDown();
+        }
+
+        if (IsMousePressed())
+        {
+            HandleMouseMoveWhilePressed();
+        }
+
+        if (IsMouseUpThisFrame())
+        {
+            HandleMouseUp();
         }
     }
 
-    private void OnDisable()
+    private void HandleMouseDown()
     {
-        if (eventDispatcher != null)
+        if (!TryGetCurrentTouchCoord(out TouchCoord coord))
         {
-            eventDispatcher.TouchReceived -= OnTouchReceived;
+            return;
         }
 
-        ResetPointerState(driverPointer);
-        ResetPointerState(passengerPointer);
+        isPressed = true;
+        downCoord = coord;
+        latestCoord = coord;
+
+        if (logMouseDown)
+        {
+            LogCoord("DOWN", coord);
+        }
+
+        if (logPythonCommand)
+        {
+            Debug.Log("[Mouse→OLED] Python: td " + coord.x + " " + coord.y + " " + coord.source);
+        }
     }
 
-    private void OnTouchReceived(GuiEventMessage message)
+    private void HandleMouseMoveWhilePressed()
     {
-        if (message == null || message.TouchPayload == null)
+        if (!isPressed)
         {
-            Debug.LogWarning("[OLED Pointer] Touch payload is null.");
             return;
         }
 
-        GuiEventTouchPayload payload = message.TouchPayload;
-
-        string sourceText = NormalizeText(payload.source);
-        string eventText = NormalizeText(payload.GetTouchEventText());
-
-        PointerState pointerState = GetPointerState(sourceText);
-        Camera sourceCamera = GetRaycastCamera(sourceText);
-
-        if (pointerState == null)
+        if (!TryGetCurrentTouchCoord(out TouchCoord coord))
         {
-            Debug.LogWarning("[OLED Pointer] Unknown source: " + payload.source);
             return;
         }
 
-        if (sourceCamera == null)
+        latestCoord = coord;
+
+        if (!logMouseDragMove)
         {
-            Debug.LogWarning("[OLED Pointer] Raycast camera is not assigned for source=" + sourceText);
             return;
         }
 
-        if (!TryConvertToScreenPoint(
-                payload,
-                sourceText,
-                sourceCamera,
-                out Vector2 screenPoint,
-                out Vector2 canvasLocalPoint,
-                out Vector2 sourceLocalPoint
-            ))
+        LogCoord("MOVE", coord);
+
+        if (logPythonCommand)
         {
-            Debug.LogWarning("[OLED Pointer] Failed to convert touch coordinate.");
+            Debug.Log("[Mouse→OLED] Python: tm " + coord.x + " " + coord.y + " " + coord.source);
+        }
+    }
+
+    private void HandleMouseUp()
+    {
+        if (!isPressed)
+        {
             return;
         }
 
-        if (logTouch)
+        if (!TryGetCurrentTouchCoord(out TouchCoord upCoord))
+        {
+            upCoord = latestCoord;
+        }
+
+        isPressed = false;
+
+        if (logMouseUp)
+        {
+            LogCoord("UP", upCoord);
+        }
+
+        if (!logPythonCommand)
+        {
+            return;
+        }
+
+        Debug.Log("[Mouse→OLED] Python: tu " + upCoord.x + " " + upCoord.y + " " + upCoord.source);
+
+        float distance = Vector2.Distance(
+            new Vector2(downCoord.x, downCoord.y),
+            new Vector2(upCoord.x, upCoord.y)
+        );
+
+        if (distance < dragDetectThreshold && downCoord.source == upCoord.source)
         {
             Debug.Log(
-                "[OLED Pointer] source="
-                + sourceText
-                + " event="
-                + eventText
-                + " touch=("
-                + payload.x
-                + ", "
-                + payload.y
-                + ") sourceLocal="
-                + sourceLocalPoint
-                + " canvasLocal="
-                + canvasLocalPoint
-                + " screen="
-                + screenPoint
-                + " camera="
-                + sourceCamera.name
+                "[Mouse→OLED] Python Tap Command: tap "
+                + downCoord.x
+                + " "
+                + downCoord.y
+                + " "
+                + downCoord.source
+            );
+
+            return;
+        }
+
+        if (downCoord.source == upCoord.source)
+        {
+            Debug.Log(
+                "[Mouse→OLED] Python Drag Command: drag "
+                + downCoord.x
+                + " "
+                + downCoord.y
+                + " "
+                + upCoord.x
+                + " "
+                + upCoord.y
+                + " "
+                + downCoord.source
             );
         }
-
-        GameObject hitObject = RaycastTop(screenPoint, sourceCamera, out RaycastResult topResult);
-
-        if (logRaycastHit)
+        else
         {
-            string hitName = hitObject == null ? "None" : GetHierarchyPath(hitObject);
-            Debug.Log("[OLED Pointer Raycast] hit=" + hitName);
+            Debug.LogWarning(
+                "[Mouse→OLED] Drag source changed from "
+                + downCoord.source
+                + " to "
+                + upCoord.source
+                + ". Command not generated."
+            );
         }
-
-        if (!enablePointerEvents)
-        {
-            return;
-        }
-
-        if (eventText == "down")
-        {
-            HandlePointerDown(pointerState, screenPoint, topResult);
-            return;
-        }
-
-        if (eventText == "move")
-        {
-            HandlePointerMove(pointerState, screenPoint, topResult);
-            return;
-        }
-
-        if (eventText == "up")
-        {
-            HandlePointerUp(pointerState, screenPoint, topResult);
-            return;
-        }
-
-        Debug.LogWarning("[OLED Pointer] Unknown touch event: " + payload.GetTouchEventText());
     }
 
-    private bool TryConvertToScreenPoint(
-        GuiEventTouchPayload payload,
-        string normalizedSource,
-        Camera sourceCamera,
-        out Vector2 screenPoint,
-        out Vector2 canvasLocalPoint,
-        out Vector2 sourceLocalPoint
+    private bool TryGetCurrentTouchCoord(out TouchCoord coord)
+    {
+        coord = new TouchCoord();
+
+        Vector2 rawMousePosition = GetMousePosition();
+
+        if (!TryResolveSourceAndCamera(
+                rawMousePosition,
+                out string source,
+                out Camera targetCamera,
+                out Vector2 cameraScreenPoint
+            ))
+        {
+            return false;
+        }
+
+        if (targetCamera == null || touchSurfaceRect == null)
+        {
+            Debug.LogWarning("[Mouse→OLED] Camera or TouchSurfaceRect is not assigned.");
+            return false;
+        }
+
+        if (!RectTransformUtility.ScreenPointToLocalPointInRectangle(
+                touchSurfaceRect,
+                cameraScreenPoint,
+                targetCamera,
+                out Vector2 canvasLocalPoint
+            ))
+        {
+            Debug.LogWarning("[Mouse→OLED] Failed to convert mouse position to canvas local point.");
+            return false;
+        }
+
+        if (!TryCanvasLocalToTouchCoord(
+                source,
+                canvasLocalPoint,
+                out int touchX,
+                out int touchY
+            ))
+        {
+            return false;
+        }
+
+        GameObject hitObject = null;
+
+        if (raycastHitObject)
+        {
+            hitObject = RaycastTop(cameraScreenPoint, targetCamera);
+        }
+
+        coord = new TouchCoord
+        {
+            source = source,
+            x = touchX,
+            y = touchY,
+            canvasLocal = canvasLocalPoint,
+            screenPoint = cameraScreenPoint,
+            hitObject = hitObject
+        };
+
+        return true;
+    }
+
+    private bool TryResolveSourceAndCamera(
+        Vector2 rawMousePosition,
+        out string source,
+        out Camera targetCamera,
+        out Vector2 cameraScreenPoint
     )
     {
-        screenPoint = Vector2.zero;
-        canvasLocalPoint = Vector2.zero;
-        sourceLocalPoint = Vector2.zero;
+        source = "";
+        targetCamera = null;
+        cameraScreenPoint = rawMousePosition;
 
-        if (touchSurfaceRect == null || sourceCamera == null)
+        if (sourceMode == SourceMode.ForceDriver)
+        {
+            source = "driver";
+            targetCamera = driverCamera;
+            cameraScreenPoint = GetScreenPointForCamera(rawMousePosition, driverCamera);
+            return targetCamera != null;
+        }
+
+        if (sourceMode == SourceMode.ForcePassenger)
+        {
+            source = "passenger";
+            targetCamera = passengerCamera;
+            cameraScreenPoint = GetScreenPointForCamera(rawMousePosition, passengerCamera);
+            return targetCamera != null;
+        }
+
+        if (TryResolveByDisplay(
+                rawMousePosition,
+                out source,
+                out targetCamera,
+                out cameraScreenPoint
+            ))
+        {
+            return true;
+        }
+
+        if (fallbackSourceMode == SourceMode.ForcePassenger)
+        {
+            source = "passenger";
+            targetCamera = passengerCamera;
+            cameraScreenPoint = GetScreenPointForCamera(rawMousePosition, passengerCamera);
+            return targetCamera != null;
+        }
+
+        source = "driver";
+        targetCamera = driverCamera;
+        cameraScreenPoint = GetScreenPointForCamera(rawMousePosition, driverCamera);
+        return targetCamera != null;
+    }
+
+    private bool TryResolveByDisplay(
+        Vector2 rawMousePosition,
+        out string source,
+        out Camera targetCamera,
+        out Vector2 cameraScreenPoint
+    )
+    {
+        source = "";
+        targetCamera = null;
+        cameraScreenPoint = rawMousePosition;
+
+        Vector3 relativeMouse = Display.RelativeMouseAt(rawMousePosition);
+
+        bool hasRelativeMouse =
+            Mathf.Abs(relativeMouse.x) > 0.001f
+            || Mathf.Abs(relativeMouse.y) > 0.001f
+            || Mathf.Abs(relativeMouse.z) > 0.001f;
+
+        if (!hasRelativeMouse)
+        {
+            return false;
+        }
+
+        int displayIndex = Mathf.RoundToInt(relativeMouse.z);
+
+        if (driverCamera != null && displayIndex == driverCamera.targetDisplay)
+        {
+            source = "driver";
+            targetCamera = driverCamera;
+            cameraScreenPoint = new Vector2(relativeMouse.x, relativeMouse.y);
+            return true;
+        }
+
+        if (passengerCamera != null && displayIndex == passengerCamera.targetDisplay)
+        {
+            source = "passenger";
+            targetCamera = passengerCamera;
+            cameraScreenPoint = new Vector2(relativeMouse.x, relativeMouse.y);
+            return true;
+        }
+
+        return false;
+    }
+
+    private Vector2 GetScreenPointForCamera(Vector2 rawMousePosition, Camera targetCamera)
+    {
+        if (targetCamera == null)
+        {
+            return rawMousePosition;
+        }
+
+        Vector3 relativeMouse = Display.RelativeMouseAt(rawMousePosition);
+
+        bool hasRelativeMouse =
+            Mathf.Abs(relativeMouse.x) > 0.001f
+            || Mathf.Abs(relativeMouse.y) > 0.001f
+            || Mathf.Abs(relativeMouse.z) > 0.001f;
+
+        if (!hasRelativeMouse)
+        {
+            return rawMousePosition;
+        }
+
+        int displayIndex = Mathf.RoundToInt(relativeMouse.z);
+
+        if (displayIndex == targetCamera.targetDisplay)
+        {
+            return new Vector2(relativeMouse.x, relativeMouse.y);
+        }
+
+        return rawMousePosition;
+    }
+
+    private bool TryCanvasLocalToTouchCoord(
+        string source,
+        Vector2 canvasLocalPoint,
+        out int touchX,
+        out int touchY
+    )
+    {
+        touchX = 0;
+        touchY = 0;
+
+        if (touchSurfaceRect == null)
         {
             return false;
         }
 
         Rect rect = touchSurfaceRect.rect;
 
-        float x = payload.x;
-        float y = payload.y;
+        float globalX = canvasLocalPoint.x - rect.xMin;
+        float localX = globalX;
 
-        float activeHeight = rect.height;
+        if (source == "passenger")
+        {
+            localX = globalX - passengerOffsetX;
+        }
+
+        float localY = yOriginTop
+            ? rect.yMax - canvasLocalPoint.y
+            : canvasLocalPoint.y - rect.yMin;
 
         if (clampCoordinate)
         {
-            x = Mathf.Clamp(x, 0f, driverWidth);
-            y = Mathf.Clamp(y, 0f, activeHeight);
+            localX = Mathf.Clamp(localX, 0f, driverWidth);
+            localY = Mathf.Clamp(localY, 0f, rect.height);
         }
 
-        float globalX = x;
+        touchX = Mathf.RoundToInt(localX);
+        touchY = Mathf.RoundToInt(localY);
 
-        if (normalizedSource == "passenger")
-        {
-            globalX = passengerOffsetX + x;
-        }
-
-        float canvasLocalX = rect.xMin + globalX;
-        float canvasLocalY = yOriginTop
-            ? rect.yMax - y
-            : rect.yMin + y;
-
-        sourceLocalPoint = new Vector2(x, canvasLocalY);
-        canvasLocalPoint = new Vector2(canvasLocalX, canvasLocalY);
-
-        Vector3 worldPoint = touchSurfaceRect.TransformPoint(
-            new Vector3(canvasLocalX, canvasLocalY, 0f)
-        );
-
-        screenPoint = RectTransformUtility.WorldToScreenPoint(sourceCamera, worldPoint);
         return true;
     }
 
-    private GameObject RaycastTop(
-        Vector2 screenPoint,
-        Camera sourceCamera,
-        out RaycastResult topResult
-    )
+    private GameObject RaycastTop(Vector2 screenPoint, Camera targetCamera)
     {
-        topResult = new RaycastResult();
-
         EventSystem eventSystem = EventSystem.current;
 
         if (eventSystem == null)
         {
-            Debug.LogWarning("[OLED Pointer] EventSystem.current is null.");
             return null;
         }
 
-        if (setCanvasWorldCameraOnTouch && displayCanvas != null)
+        Camera previousWorldCamera = null;
+
+        if (temporarilySetCanvasCameraForRaycast && displayCanvas != null)
         {
-            displayCanvas.worldCamera = sourceCamera;
+            previousWorldCamera = displayCanvas.worldCamera;
+            displayCanvas.worldCamera = targetCamera;
         }
 
-        PointerEventData tempEventData = new PointerEventData(eventSystem);
-        tempEventData.position = screenPoint;
+        PointerEventData eventData = new PointerEventData(eventSystem);
+        eventData.position = screenPoint;
 
         raycastResults.Clear();
-        eventSystem.RaycastAll(tempEventData, raycastResults);
+        eventSystem.RaycastAll(eventData, raycastResults);
+
+        if (temporarilySetCanvasCameraForRaycast && displayCanvas != null)
+        {
+            displayCanvas.worldCamera = previousWorldCamera;
+        }
 
         if (raycastResults.Count == 0)
         {
             return null;
         }
 
-        topResult = raycastResults[0];
-        return topResult.gameObject;
+        return raycastResults[0].gameObject;
     }
 
-    private void HandlePointerDown(
-        PointerState state,
-        Vector2 screenPoint,
-        RaycastResult raycastResult
-    )
+    private void LogCoord(string phase, TouchCoord coord)
     {
-        EventSystem eventSystem = EventSystem.current;
+        string hitName = coord.hitObject == null
+            ? "None"
+            : GetHierarchyPath(coord.hitObject);
 
-        if (eventSystem == null)
-        {
-            return;
-        }
-
-        ResetPointerState(state);
-
-        PointerEventData eventData = new PointerEventData(eventSystem);
-        eventData.pointerId = state.pointerId;
-        eventData.button = PointerEventData.InputButton.Left;
-        eventData.position = screenPoint;
-        eventData.pressPosition = screenPoint;
-        eventData.delta = Vector2.zero;
-        eventData.clickTime = Time.unscaledTime;
-        eventData.clickCount = 1;
-        eventData.pointerCurrentRaycast = raycastResult;
-        eventData.pointerPressRaycast = raycastResult;
-        eventData.useDragThreshold = true;
-
-        GameObject currentOver = raycastResult.gameObject;
-
-        state.eventData = eventData;
-        state.currentOverObject = currentOver;
-        state.lastScreenPosition = screenPoint;
-        state.isPressed = true;
-
-        if (currentOver == null)
-        {
-            LogPointer("Down hit none.");
-            return;
-        }
-
-        GameObject pointerPress = ExecuteEvents.ExecuteHierarchy(
-            currentOver,
-            eventData,
-            ExecuteEvents.pointerDownHandler
-        );
-
-        if (pointerPress == null)
-        {
-            pointerPress = ExecuteEvents.GetEventHandler<IPointerClickHandler>(currentOver);
-        }
-
-        GameObject pointerDrag = ExecuteEvents.GetEventHandler<IDragHandler>(currentOver);
-
-        eventData.pointerPress = pointerPress;
-        eventData.rawPointerPress = currentOver;
-        eventData.pointerDrag = pointerDrag;
-
-        state.pointerPress = pointerPress;
-        state.rawPointerPress = currentOver;
-        state.pointerDrag = pointerDrag;
-
-        if (pointerDrag != null)
-        {
-            ExecuteEvents.Execute(
-                pointerDrag,
-                eventData,
-                ExecuteEvents.initializePotentialDrag
-            );
-        }
-
-        LogPointer(
-            "Down current="
-            + GetObjectName(currentOver)
-            + " press="
-            + GetObjectName(pointerPress)
-            + " drag="
-            + GetObjectName(pointerDrag)
+        Debug.Log(
+            "[Mouse→OLED] "
+            + phase
+            + " source="
+            + coord.source
+            + " touch=("
+            + coord.x
+            + ", "
+            + coord.y
+            + ") canvasLocal="
+            + coord.canvasLocal
+            + " screen="
+            + coord.screenPoint
+            + " hit="
+            + hitName
         );
     }
 
-    private void HandlePointerMove(
-        PointerState state,
-        Vector2 screenPoint,
-        RaycastResult raycastResult
-    )
+    private Vector2 GetMousePosition()
     {
-        if (state == null || !state.isPressed || state.eventData == null)
+#if ENABLE_INPUT_SYSTEM
+        if (Mouse.current != null)
         {
-            return;
+            return Mouse.current.position.ReadValue();
         }
+#endif
 
-        PointerEventData eventData = state.eventData;
-
-        Vector2 delta = screenPoint - state.lastScreenPosition;
-
-        eventData.position = screenPoint;
-        eventData.delta = delta;
-        eventData.pointerCurrentRaycast = raycastResult;
-
-        state.currentOverObject = raycastResult.gameObject;
-
-        if (state.pointerDrag != null)
-        {
-            if (!state.isDragging)
-            {
-                float movedDistance = Vector2.Distance(
-                    eventData.pressPosition,
-                    eventData.position
-                );
-
-                if (movedDistance >= dragThresholdPixels)
-                {
-                    ExecuteEvents.Execute(
-                        state.pointerDrag,
-                        eventData,
-                        ExecuteEvents.beginDragHandler
-                    );
-
-                    eventData.dragging = true;
-                    state.isDragging = true;
-
-                    LogPointer("BeginDrag target=" + GetObjectName(state.pointerDrag));
-                }
-            }
-
-            if (state.isDragging)
-            {
-                ExecuteEvents.Execute(
-                    state.pointerDrag,
-                    eventData,
-                    ExecuteEvents.dragHandler
-                );
-            }
-        }
-
-        state.lastScreenPosition = screenPoint;
+#if ENABLE_LEGACY_INPUT_MANAGER
+        return Input.mousePosition;
+#else
+        return Vector2.zero;
+#endif
     }
 
-    private void HandlePointerUp(
-        PointerState state,
-        Vector2 screenPoint,
-        RaycastResult raycastResult
-    )
+    private bool IsMouseDownThisFrame()
     {
-        if (state == null || !state.isPressed || state.eventData == null)
+#if ENABLE_INPUT_SYSTEM
+        if (Mouse.current != null)
         {
-            return;
+            return Mouse.current.leftButton.wasPressedThisFrame;
         }
+#endif
 
-        PointerEventData eventData = state.eventData;
-
-        eventData.position = screenPoint;
-        eventData.delta = screenPoint - state.lastScreenPosition;
-        eventData.pointerCurrentRaycast = raycastResult;
-
-        GameObject currentOver = raycastResult.gameObject;
-
-        if (state.pointerPress != null)
-        {
-            ExecuteEvents.Execute(
-                state.pointerPress,
-                eventData,
-                ExecuteEvents.pointerUpHandler
-            );
-        }
-
-        GameObject clickHandler = currentOver == null
-            ? null
-            : ExecuteEvents.GetEventHandler<IPointerClickHandler>(currentOver);
-
-        if (!state.isDragging && state.pointerPress != null && state.pointerPress == clickHandler)
-        {
-            ExecuteEvents.Execute(
-                state.pointerPress,
-                eventData,
-                ExecuteEvents.pointerClickHandler
-            );
-
-            LogPointer("Click target=" + GetObjectName(state.pointerPress));
-        }
-
-        if (state.isDragging && state.pointerDrag != null)
-        {
-            ExecuteEvents.Execute(
-                state.pointerDrag,
-                eventData,
-                ExecuteEvents.endDragHandler
-            );
-
-            LogPointer("EndDrag target=" + GetObjectName(state.pointerDrag));
-        }
-
-        ResetPointerState(state);
+#if ENABLE_LEGACY_INPUT_MANAGER
+        return Input.GetMouseButtonDown(0);
+#else
+        return false;
+#endif
     }
 
-    private void ResetPointerState(PointerState state)
+    private bool IsMousePressed()
     {
-        if (state == null)
+#if ENABLE_INPUT_SYSTEM
+        if (Mouse.current != null)
         {
-            return;
+            return Mouse.current.leftButton.isPressed;
         }
+#endif
 
-        state.eventData = null;
-        state.currentOverObject = null;
-        state.pointerPress = null;
-        state.rawPointerPress = null;
-        state.pointerDrag = null;
-        state.isPressed = false;
-        state.isDragging = false;
-        state.lastScreenPosition = Vector2.zero;
+#if ENABLE_LEGACY_INPUT_MANAGER
+        return Input.GetMouseButton(0);
+#else
+        return false;
+#endif
     }
 
-    private PointerState GetPointerState(string source)
+    private bool IsMouseUpThisFrame()
     {
-        if (source == "driver")
+#if ENABLE_INPUT_SYSTEM
+        if (Mouse.current != null)
         {
-            return driverPointer;
+            return Mouse.current.leftButton.wasReleasedThisFrame;
         }
+#endif
 
-        if (source == "passenger")
-        {
-            return passengerPointer;
-        }
-
-        return null;
-    }
-
-    private Camera GetRaycastCamera(string source)
-    {
-        if (source == "driver")
-        {
-            return driverRaycastCamera;
-        }
-
-        if (source == "passenger")
-        {
-            return passengerRaycastCamera;
-        }
-
-        return null;
-    }
-
-    private void InitializePointerStates()
-    {
-        if (driverPointer == null)
-        {
-            driverPointer = new PointerState
-            {
-                pointerId = driverPointerId
-            };
-        }
-
-        if (passengerPointer == null)
-        {
-            passengerPointer = new PointerState
-            {
-                pointerId = passengerPointerId
-            };
-        }
+#if ENABLE_LEGACY_INPUT_MANAGER
+        return Input.GetMouseButtonUp(0);
+#else
+        return false;
+#endif
     }
 
     private void ResolveReferences()
     {
-        if (eventDispatcher == null)
-        {
-            eventDispatcher = FindFirstObjectByType<GuiEventDispatcher>();
-        }
-
         if (displayCanvas == null)
         {
             displayCanvas = FindFirstObjectByType<Canvas>();
@@ -546,36 +567,6 @@ public class OledTouchPointerBridge : MonoBehaviour
         {
             touchSurfaceRect = displayCanvas.GetComponent<RectTransform>();
         }
-    }
-
-    private string NormalizeText(string value)
-    {
-        if (string.IsNullOrEmpty(value))
-        {
-            return "";
-        }
-
-        return value.Trim().ToLowerInvariant().Replace("_", "").Replace("-", "");
-    }
-
-    private void LogPointer(string message)
-    {
-        if (!logPointerEvent)
-        {
-            return;
-        }
-
-        Debug.Log("[OLED Pointer] " + message);
-    }
-
-    private string GetObjectName(GameObject target)
-    {
-        if (target == null)
-        {
-            return "None";
-        }
-
-        return target.name;
     }
 
     private string GetHierarchyPath(GameObject target)
