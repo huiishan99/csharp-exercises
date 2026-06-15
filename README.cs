@@ -1,106 +1,102 @@
-using UnityEngine;
+using System.Globalization;
 
-public class CanvasEventCameraSwitcher : MonoBehaviour
+public static class GuiCommandFactory
 {
-    [SerializeField] private Canvas targetCanvas;
-    [SerializeField] private KinemaMockDisplayController displayController;
+    public const string FullModeCommand = "full_mode_cmd";
+    public const string HalfModeCommand = "half_mode_cmd";
+    public const string CloseModeCommand = "close_mode_cmd";
 
-    [Header("Event Cameras")]
-    [SerializeField] private Camera driverEventCamera;
-    [SerializeField] private Camera passengerEventCamera;
-    [SerializeField] private Camera fallbackEventCamera;
+    public const string StartLedPresetCommand = "CMD_START_LED_PRESET";
+    public const string SetLedBrightnessCommand = "CMD_SET_LED_BRIGHTNESS";
+    public const string SetLedSaturationCommand = "CMD_SET_LED_SATURATION";
 
-    [Header("Update")]
-    [SerializeField] private bool updateEveryFrame = true;
-    [SerializeField] private bool logSwitch = true;
+    public const string SetHvacVibrationCommand = "CMD_SET_HVAC_VIBRATION";
+    public const string SetHvacSoundCommand = "CMD_SET_HVAC_SOUND";
 
-    private Camera currentCamera;
+    // 暫定Command。正式名が決まったらここだけ変更する。
+    public const string SetAudioOutputStateCommand = "CMD_SET_AUDIO_OUTPUT_STATE";
 
-    private void Awake()
+    public static string CreateCommand(string messageType)
     {
-        ResolveReferences();
-        ApplyByCurrentMode();
+        return CreateCommand(messageType, "{}");
     }
 
-    private void OnEnable()
+    public static string CreateCommand(string messageType, string payloadJson)
     {
-        ResolveReferences();
-        ApplyByCurrentMode();
+        if (string.IsNullOrEmpty(payloadJson))
+        {
+            payloadJson = "{}";
+        }
+
+        return "{\"message_type\":\""
+            + EscapeJson(messageType)
+            + "\",\"payload\":"
+            + payloadJson
+            + "}";
     }
 
-    private void LateUpdate()
+    public static string CreateIndexPayload(string key, int value)
     {
-        if (!updateEveryFrame)
-        {
-            return;
-        }
-
-        ApplyByCurrentMode();
+        return "{\"" + EscapeJson(key) + "\":" + value + "}";
     }
 
-    public void ApplyByCurrentMode()
+    public static string CreateFloatPayload(string key, float value)
     {
-        ResolveReferences();
-
-        if (targetCanvas == null)
-        {
-            return;
-        }
-
-        Camera nextCamera = GetCameraForCurrentMode();
-
-        if (nextCamera == null)
-        {
-            return;
-        }
-
-        if (currentCamera == nextCamera && targetCanvas.worldCamera == nextCamera)
-        {
-            return;
-        }
-
-        currentCamera = nextCamera;
-        targetCanvas.worldCamera = nextCamera;
-
-        if (logSwitch)
-        {
-            Debug.Log("[CanvasEventCamera] Event Camera = " + nextCamera.name);
-        }
+        return "{\""
+            + EscapeJson(key)
+            + "\":"
+            + FloatToJson(value)
+            + "}";
     }
 
-    private Camera GetCameraForCurrentMode()
+    public static string CreateAudioOutputStatePayload(bool left, bool right, float volume)
     {
-        if (displayController == null)
-        {
-            return fallbackEventCamera;
-        }
-
-        switch (displayController.CurrentDisplayMode)
-        {
-            case KinemaMockDisplayMode.Full:
-                return driverEventCamera != null ? driverEventCamera : fallbackEventCamera;
-
-            case KinemaMockDisplayMode.Half:
-            case KinemaMockDisplayMode.RearView:
-                return passengerEventCamera != null ? passengerEventCamera : fallbackEventCamera;
-
-            case KinemaMockDisplayMode.Opening:
-            case KinemaMockDisplayMode.Close:
-            default:
-                return fallbackEventCamera != null ? fallbackEventCamera : driverEventCamera;
-        }
+        return "{\"left\":"
+            + BoolToJson(left)
+            + ",\"right\":"
+            + BoolToJson(right)
+            + ",\"volume\":"
+            + FloatToJson(Clamp01(volume))
+            + "}";
     }
 
-    private void ResolveReferences()
+    private static string BoolToJson(bool value)
     {
-        if (targetCanvas == null)
+        return value ? "true" : "false";
+    }
+
+    private static string FloatToJson(float value)
+    {
+        return value.ToString("0.###", CultureInfo.InvariantCulture);
+    }
+
+    private static float Clamp01(float value)
+    {
+        if (value < 0f)
         {
-            targetCanvas = FindFirstObjectByType<Canvas>();
+            return 0f;
         }
 
-        if (displayController == null)
+        if (value > 1f)
         {
-            displayController = FindFirstObjectByType<KinemaMockDisplayController>();
+            return 1f;
         }
+
+        return value;
+    }
+
+    private static string EscapeJson(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return "";
+        }
+
+        return value
+            .Replace("\\", "\\\\")
+            .Replace("\"", "\\\"")
+            .Replace("\n", "\\n")
+            .Replace("\r", "\\r")
+            .Replace("\t", "\\t");
     }
 }
