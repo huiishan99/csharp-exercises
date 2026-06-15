@@ -1,32 +1,31 @@
+using System;
 using System.Collections;
 using UnityEngine;
-using UnityEngine.EventSystems;
+using UnityEngine.UI;
 
 namespace PushButtonSliderLite
 {
     [DisallowMultipleComponent]
-    public sealed class ThemeSelectButton : MonoBehaviour, IPointerClickHandler
+    public sealed class ThemeSpriteApplier : MonoBehaviour
     {
-        [Header("视觉效果")]
-        [SerializeField] private PressVisualEffect visualEffect;
-
-        [Header("输入状态")]
-        [SerializeField] private bool interactable = true;
-
-        private ThemeButtonGroup ownerGroup;
-        private int buttonIndex = -1;
-        private bool isSelected;
-        private Coroutine reapplyRoutine;
-
-        public int ButtonIndex
+        [Serializable]
+        public sealed class ThemeSpriteSet
         {
-            get { return buttonIndex; }
+            public Sprite sliderTrackSprite;
+            public Sprite externalImageSprite;
         }
 
-        public bool IsSelected
-        {
-            get { return isSelected; }
-        }
+        [Header("主题按钮组")]
+        [SerializeField] private ThemeButtonGroup buttonGroup;
+
+        [Header("要被替换的 Image")]
+        [SerializeField] private Image sliderTrackImage;
+        [SerializeField] private Image externalImage;
+
+        [Header("6组主题 Sprite：顺序对应 0-5")]
+        [SerializeField] private ThemeSpriteSet[] themeSprites = new ThemeSpriteSet[6];
+
+        private Coroutine applyRoutine;
 
         private void Awake()
         {
@@ -36,87 +35,92 @@ namespace PushButtonSliderLite
         private void OnEnable()
         {
             ResolveReferences();
-            RequestReapplySelectedVisual();
+
+            if (buttonGroup != null)
+            {
+                buttonGroup.onSelectedIndexChanged.RemoveListener(ApplyByIndex);
+                buttonGroup.onSelectedIndexChanged.AddListener(ApplyByIndex);
+            }
+
+            RequestApplyCurrentSelection();
         }
 
         private void OnDisable()
         {
-            if (reapplyRoutine != null)
+            if (buttonGroup != null)
             {
-                StopCoroutine(reapplyRoutine);
-                reapplyRoutine = null;
+                buttonGroup.onSelectedIndexChanged.RemoveListener(ApplyByIndex);
+            }
+
+            if (applyRoutine != null)
+            {
+                StopCoroutine(applyRoutine);
+                applyRoutine = null;
             }
         }
 
-        public void Initialize(ThemeButtonGroup group, int index)
+        public void ApplyByIndex(int index)
         {
-            ownerGroup = group;
-            buttonIndex = index;
-        }
-
-        public void OnPointerClick(PointerEventData eventData)
-        {
-            if (!interactable)
-            {
-                return;
-            }
-
-            if (ownerGroup == null)
+            if (themeSprites == null || index < 0 || index >= themeSprites.Length)
             {
                 return;
             }
 
-            ownerGroup.SelectIndexByUser(buttonIndex);
+            ThemeSpriteSet spriteSet = themeSprites[index];
+
+            if (spriteSet == null)
+            {
+                return;
+            }
+
+            if (sliderTrackImage != null && spriteSet.sliderTrackSprite != null)
+            {
+                sliderTrackImage.sprite = spriteSet.sliderTrackSprite;
+            }
+
+            if (externalImage != null && spriteSet.externalImageSprite != null)
+            {
+                externalImage.sprite = spriteSet.externalImageSprite;
+            }
         }
 
-        public void SetSelected(bool selected)
-        {
-            isSelected = selected;
-            ApplySelectedVisual();
-        }
-
-        public void SetInteractable(bool canInteract)
-        {
-            interactable = canInteract;
-        }
-
-        private void RequestReapplySelectedVisual()
+        private void RequestApplyCurrentSelection()
         {
             if (!isActiveAndEnabled)
             {
                 return;
             }
 
-            if (reapplyRoutine != null)
+            if (applyRoutine != null)
             {
-                StopCoroutine(reapplyRoutine);
+                StopCoroutine(applyRoutine);
             }
 
-            reapplyRoutine = StartCoroutine(ReapplySelectedVisualNextFrame());
+            applyRoutine = StartCoroutine(ApplyCurrentSelectionNextFrame());
         }
 
-        private IEnumerator ReapplySelectedVisualNextFrame()
+        private IEnumerator ApplyCurrentSelectionNextFrame()
         {
-            // PressVisualEffect.OnEnable() が released 状態へ戻した後で再適用する。
             yield return null;
 
-            reapplyRoutine = null;
-            ApplySelectedVisual();
-        }
+            applyRoutine = null;
 
-        private void ApplySelectedVisual()
-        {
-            if (visualEffect != null)
+            if (buttonGroup == null)
             {
-                visualEffect.SetPressed(isSelected);
+                yield break;
+            }
+
+            if (buttonGroup.SelectedIndex >= 0)
+            {
+                ApplyByIndex(buttonGroup.SelectedIndex);
             }
         }
 
         private void ResolveReferences()
         {
-            if (visualEffect == null)
+            if (buttonGroup == null)
             {
-                visualEffect = GetComponent<PressVisualEffect>();
+                buttonGroup = GetComponent<ThemeButtonGroup>();
             }
         }
     }
