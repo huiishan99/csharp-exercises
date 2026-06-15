@@ -1,63 +1,42 @@
-using System;
 using System.Collections;
 using UnityEngine;
-using UnityEngine.Events;
+using UnityEngine.EventSystems;
 
 namespace PushButtonSliderLite
 {
     [DisallowMultipleComponent]
-    public sealed class ThemeButtonGroup : MonoBehaviour
+    public sealed class ThemeSelectButton : MonoBehaviour, IPointerClickHandler
     {
-        [Serializable]
-        public sealed class IntEvent : UnityEvent<int> { }
+        [Header("视觉效果")]
+        [SerializeField] private PressVisualEffect visualEffect;
 
-        [Header("按钮列表：顺序对应 0-5")]
-        [SerializeField] private ThemeSelectButton[] buttons = new ThemeSelectButton[6];
+        [Header("输入状态")]
+        [SerializeField] private bool interactable = true;
 
-        [Header("默认选中项")]
-        [SerializeField] private bool selectDefaultOnStart = true;
-        [SerializeField, Min(0)] private int defaultSelectedIndex = 0;
-
-        [Header("选择变化事件：视觉更新用")]
-        public IntEvent onSelectedIndexChanged = new IntEvent();
-
-        [Header("用户选择事件：Command发送用")]
-        public IntEvent onUserSelectedIndexChanged = new IntEvent();
-
-        private int selectedIndex = -1;
-        private bool initialized;
+        private ThemeButtonGroup ownerGroup;
+        private int buttonIndex = -1;
+        private bool isSelected;
         private Coroutine reapplyRoutine;
 
-        public int SelectedIndex
+        public int ButtonIndex
         {
-            get { return selectedIndex; }
+            get { return buttonIndex; }
         }
 
-        public int ButtonCount
+        public bool IsSelected
         {
-            get { return buttons == null ? 0 : buttons.Length; }
+            get { return isSelected; }
         }
 
         private void Awake()
         {
-            InitializeButtons();
+            ResolveReferences();
         }
 
         private void OnEnable()
         {
-            InitializeButtons();
-            RequestReapplySelectionVisual();
-        }
-
-        private void Start()
-        {
-            if (selectDefaultOnStart && selectedIndex < 0)
-            {
-                // 初期選択はCommandを送らない。
-                SelectIndexInternal(defaultSelectedIndex, true, false);
-            }
-
-            RequestReapplySelectionVisual();
+            ResolveReferences();
+            RequestReapplySelectedVisual();
         }
 
         private void OnDisable()
@@ -69,103 +48,39 @@ namespace PushButtonSliderLite
             }
         }
 
-        private void OnValidate()
+        public void Initialize(ThemeButtonGroup group, int index)
         {
-            if (defaultSelectedIndex < 0)
-            {
-                defaultSelectedIndex = 0;
-            }
+            ownerGroup = group;
+            buttonIndex = index;
         }
 
-        private void InitializeButtons()
+        public void OnPointerClick(PointerEventData eventData)
         {
-            if (initialized)
+            if (!interactable)
             {
                 return;
             }
 
-            initialized = true;
-
-            if (buttons == null)
+            if (ownerGroup == null)
             {
                 return;
             }
 
-            for (int i = 0; i < buttons.Length; i++)
-            {
-                if (buttons[i] == null)
-                {
-                    continue;
-                }
-
-                buttons[i].Initialize(this, i);
-                buttons[i].SetSelected(false);
-            }
+            ownerGroup.SelectIndexByUser(buttonIndex);
         }
 
-        public void SelectIndex(int index)
+        public void SetSelected(bool selected)
         {
-            SelectIndexInternal(index, true, false);
+            isSelected = selected;
+            ApplySelectedVisual();
         }
 
-        public void SelectIndexByUser(int index)
+        public void SetInteractable(bool canInteract)
         {
-            SelectIndexInternal(index, true, true);
+            interactable = canInteract;
         }
 
-        public void NotifyCurrentSelection()
-        {
-            if (selectedIndex < 0)
-            {
-                return;
-            }
-
-            ReapplyButtonVisuals();
-            onSelectedIndexChanged.Invoke(selectedIndex);
-        }
-
-        private void SelectIndexInternal(
-            int index,
-            bool notifyVisual,
-            bool notifyUserCommand
-        )
-        {
-            InitializeButtons();
-
-            if (buttons == null || buttons.Length == 0)
-            {
-                return;
-            }
-
-            if (index < 0 || index >= buttons.Length)
-            {
-                Debug.LogWarning("ThemeButtonGroup: index " + index + " is out of range.", this);
-                return;
-            }
-
-            if (buttons[index] == null)
-            {
-                Debug.LogWarning("ThemeButtonGroup: button at index " + index + " is not assigned.", this);
-                return;
-            }
-
-            bool indexChanged = selectedIndex != index;
-            selectedIndex = index;
-
-            ReapplyButtonVisuals();
-
-            if (notifyVisual && indexChanged)
-            {
-                onSelectedIndexChanged.Invoke(selectedIndex);
-            }
-
-            if (notifyUserCommand && indexChanged)
-            {
-                onUserSelectedIndexChanged.Invoke(selectedIndex);
-            }
-        }
-
-        private void RequestReapplySelectionVisual()
+        private void RequestReapplySelectedVisual()
         {
             if (!isActiveAndEnabled)
             {
@@ -177,40 +92,31 @@ namespace PushButtonSliderLite
                 StopCoroutine(reapplyRoutine);
             }
 
-            reapplyRoutine = StartCoroutine(ReapplySelectionVisualNextFrame());
+            reapplyRoutine = StartCoroutine(ReapplySelectedVisualNextFrame());
         }
 
-        private IEnumerator ReapplySelectionVisualNextFrame()
+        private IEnumerator ReapplySelectedVisualNextFrame()
         {
-            // PressVisualEffect.OnEnable() が normal に戻した後で再適用する。
+            // PressVisualEffect.OnEnable() が released 状態へ戻した後で再適用する。
             yield return null;
 
             reapplyRoutine = null;
-
-            if (selectedIndex < 0)
-            {
-                yield break;
-            }
-
-            ReapplyButtonVisuals();
-            onSelectedIndexChanged.Invoke(selectedIndex);
+            ApplySelectedVisual();
         }
 
-        private void ReapplyButtonVisuals()
+        private void ApplySelectedVisual()
         {
-            if (buttons == null)
+            if (visualEffect != null)
             {
-                return;
+                visualEffect.SetPressed(isSelected);
             }
+        }
 
-            for (int i = 0; i < buttons.Length; i++)
+        private void ResolveReferences()
+        {
+            if (visualEffect == null)
             {
-                if (buttons[i] == null)
-                {
-                    continue;
-                }
-
-                buttons[i].SetSelected(i == selectedIndex);
+                visualEffect = GetComponent<PressVisualEffect>();
             }
         }
     }
