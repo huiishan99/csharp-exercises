@@ -1,114 +1,217 @@
+using System;
+using System.Collections;
 using UnityEngine;
+using UnityEngine.Events;
 
-[ExecuteAlways]
-public class OledTouchCoordinateDebugger : MonoBehaviour
+namespace PushButtonSliderLite
 {
-    public enum TouchSource
+    [DisallowMultipleComponent]
+    public sealed class ThemeButtonGroup : MonoBehaviour
     {
-        Driver,
-        Passenger
-    }
+        [Serializable]
+        public sealed class IntEvent : UnityEvent<int> { }
 
-    [SerializeField] private RectTransform touchSurfaceRect;
-    [SerializeField] private RectTransform targetRect;
-    [SerializeField] private TouchSource source = TouchSource.Driver;
+        [Header("按钮列表：顺序对应 0-5")]
+        [SerializeField] private ThemeSelectButton[] buttons = new ThemeSelectButton[6];
 
-    [SerializeField] private float passengerOffsetX = 2650f;
-    [SerializeField] private bool yOriginTop = true;
+        [Header("默认选中项")]
+        [SerializeField] private bool selectDefaultOnStart = true;
+        [SerializeField, Min(0)] private int defaultSelectedIndex = 0;
 
-    [Header("Debug")]
-    [SerializeField] private bool printOnStart = false;
+        [Header("选择变化事件：视觉更新用")]
+        public IntEvent onSelectedIndexChanged = new IntEvent();
 
-    private readonly Vector3[] targetCorners = new Vector3[4];
+        [Header("用户选择事件：Command发送用")]
+        public IntEvent onUserSelectedIndexChanged = new IntEvent();
 
-    private void Start()
-    {
-        if (printOnStart)
+        private int selectedIndex = -1;
+        private bool initialized;
+        private Coroutine reapplyRoutine;
+
+        public int SelectedIndex
         {
-            PrintTouchCommand();
-        }
-    }
-
-    [ContextMenu("Print Touch Command For Target")]
-    public void PrintTouchCommand()
-    {
-        if (touchSurfaceRect == null)
-        {
-            Debug.LogWarning("[OLED Touch Coord] TouchSurfaceRect is not assigned.");
-            return;
+            get { return selectedIndex; }
         }
 
-        if (targetRect == null)
+        public int ButtonCount
         {
-            Debug.LogWarning("[OLED Touch Coord] TargetRect is not assigned.");
-            return;
+            get { return buttons == null ? 0 : buttons.Length; }
         }
 
-        targetRect.GetWorldCorners(targetCorners);
-
-        Vector2 local0 = WorldToTouchSurfaceLocal(targetCorners[0]);
-        Vector2 local1 = WorldToTouchSurfaceLocal(targetCorners[1]);
-        Vector2 local2 = WorldToTouchSurfaceLocal(targetCorners[2]);
-        Vector2 local3 = WorldToTouchSurfaceLocal(targetCorners[3]);
-
-        float minLocalX = Mathf.Min(local0.x, local1.x, local2.x, local3.x);
-        float maxLocalX = Mathf.Max(local0.x, local1.x, local2.x, local3.x);
-        float minLocalY = Mathf.Min(local0.y, local1.y, local2.y, local3.y);
-        float maxLocalY = Mathf.Max(local0.y, local1.y, local2.y, local3.y);
-
-        Vector2 centerLocal = new Vector2(
-            (minLocalX + maxLocalX) * 0.5f,
-            (minLocalY + maxLocalY) * 0.5f
-        );
-
-        Vector2 centerTouch = LocalToTouch(centerLocal);
-        Vector2 minTouch = LocalToTouch(new Vector2(minLocalX, maxLocalY));
-        Vector2 maxTouch = LocalToTouch(new Vector2(maxLocalX, minLocalY));
-
-        string sourceText = source == TouchSource.Driver
-            ? "driver"
-            : "passenger";
-
-        Debug.Log(
-            "[OLED Touch Coord] Target="
-            + targetRect.name
-            + "\nCommand: tap "
-            + Mathf.RoundToInt(centerTouch.x)
-            + " "
-            + Mathf.RoundToInt(centerTouch.y)
-            + " "
-            + sourceText
-            + "\nX Range: "
-            + Mathf.RoundToInt(Mathf.Min(minTouch.x, maxTouch.x))
-            + " ~ "
-            + Mathf.RoundToInt(Mathf.Max(minTouch.x, maxTouch.x))
-            + "\nY Range: "
-            + Mathf.RoundToInt(Mathf.Min(minTouch.y, maxTouch.y))
-            + " ~ "
-            + Mathf.RoundToInt(Mathf.Max(minTouch.y, maxTouch.y))
-        );
-    }
-
-    private Vector2 WorldToTouchSurfaceLocal(Vector3 worldPosition)
-    {
-        return touchSurfaceRect.InverseTransformPoint(worldPosition);
-    }
-
-    private Vector2 LocalToTouch(Vector2 localPoint)
-    {
-        Rect rect = touchSurfaceRect.rect;
-
-        float globalX = localPoint.x - rect.xMin;
-
-        if (source == TouchSource.Passenger)
+        private void Awake()
         {
-            globalX -= passengerOffsetX;
+            InitializeButtons();
         }
 
-        float touchY = yOriginTop
-            ? rect.yMax - localPoint.y
-            : localPoint.y - rect.yMin;
+        private void OnEnable()
+        {
+            InitializeButtons();
+            RequestReapplySelectionVisual();
+        }
 
-        return new Vector2(globalX, touchY);
+        private void Start()
+        {
+            if (selectDefaultOnStart && selectedIndex < 0)
+            {
+                // 初期選択はCommandを送らない。
+                SelectIndexInternal(defaultSelectedIndex, true, false);
+            }
+
+            RequestReapplySelectionVisual();
+        }
+
+        private void OnDisable()
+        {
+            if (reapplyRoutine != null)
+            {
+                StopCoroutine(reapplyRoutine);
+                reapplyRoutine = null;
+            }
+        }
+
+        private void OnValidate()
+        {
+            if (defaultSelectedIndex < 0)
+            {
+                defaultSelectedIndex = 0;
+            }
+        }
+
+        private void InitializeButtons()
+        {
+            if (initialized)
+            {
+                return;
+            }
+
+            initialized = true;
+
+            if (buttons == null)
+            {
+                return;
+            }
+
+            for (int i = 0; i < buttons.Length; i++)
+            {
+                if (buttons[i] == null)
+                {
+                    continue;
+                }
+
+                buttons[i].Initialize(this, i);
+                buttons[i].SetSelected(false);
+            }
+        }
+
+        public void SelectIndex(int index)
+        {
+            SelectIndexInternal(index, true, false);
+        }
+
+        public void SelectIndexByUser(int index)
+        {
+            SelectIndexInternal(index, true, true);
+        }
+
+        public void NotifyCurrentSelection()
+        {
+            if (selectedIndex < 0)
+            {
+                return;
+            }
+
+            ReapplyButtonVisuals();
+            onSelectedIndexChanged.Invoke(selectedIndex);
+        }
+
+        private void SelectIndexInternal(
+            int index,
+            bool notifyVisual,
+            bool notifyUserCommand
+        )
+        {
+            InitializeButtons();
+
+            if (buttons == null || buttons.Length == 0)
+            {
+                return;
+            }
+
+            if (index < 0 || index >= buttons.Length)
+            {
+                Debug.LogWarning("ThemeButtonGroup: index " + index + " is out of range.", this);
+                return;
+            }
+
+            if (buttons[index] == null)
+            {
+                Debug.LogWarning("ThemeButtonGroup: button at index " + index + " is not assigned.", this);
+                return;
+            }
+
+            bool indexChanged = selectedIndex != index;
+            selectedIndex = index;
+
+            ReapplyButtonVisuals();
+
+            if (notifyVisual && indexChanged)
+            {
+                onSelectedIndexChanged.Invoke(selectedIndex);
+            }
+
+            if (notifyUserCommand && indexChanged)
+            {
+                onUserSelectedIndexChanged.Invoke(selectedIndex);
+            }
+        }
+
+        private void RequestReapplySelectionVisual()
+        {
+            if (!isActiveAndEnabled)
+            {
+                return;
+            }
+
+            if (reapplyRoutine != null)
+            {
+                StopCoroutine(reapplyRoutine);
+            }
+
+            reapplyRoutine = StartCoroutine(ReapplySelectionVisualNextFrame());
+        }
+
+        private IEnumerator ReapplySelectionVisualNextFrame()
+        {
+            // PressVisualEffect.OnEnable() が normal に戻した後で再適用する。
+            yield return null;
+
+            reapplyRoutine = null;
+
+            if (selectedIndex < 0)
+            {
+                yield break;
+            }
+
+            ReapplyButtonVisuals();
+            onSelectedIndexChanged.Invoke(selectedIndex);
+        }
+
+        private void ReapplyButtonVisuals()
+        {
+            if (buttons == null)
+            {
+                return;
+            }
+
+            for (int i = 0; i < buttons.Length; i++)
+            {
+                if (buttons[i] == null)
+                {
+                    continue;
+                }
+
+                buttons[i].SetSelected(i == selectedIndex);
+            }
+        }
     }
 }
