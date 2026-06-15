@@ -10,9 +10,15 @@ public class OledMouseTouchCoordinateLogger : MonoBehaviour
 {
     public enum SourceMode
     {
-        AutoByDisplay,
+        AutoByCanvasX,
         ForceDriver,
         ForcePassenger
+    }
+
+    public enum ScreenPointMode
+    {
+        RawInputPosition,
+        RelativeToCanvasEventCameraDisplay
     }
 
     private struct TouchCoord
@@ -23,21 +29,21 @@ public class OledMouseTouchCoordinateLogger : MonoBehaviour
         public Vector2 canvasLocal;
         public Vector2 screenPoint;
         public GameObject hitObject;
+        public Camera eventCamera;
     }
 
     [Header("Source")]
-    [SerializeField] private SourceMode sourceMode = SourceMode.AutoByDisplay;
-    [SerializeField] private SourceMode fallbackSourceMode = SourceMode.ForceDriver;
+    [SerializeField] private SourceMode sourceMode = SourceMode.AutoByCanvasX;
 
-    [Header("Canvas / Camera")]
+    [Header("Canvas")]
     [SerializeField] private Canvas displayCanvas;
     [SerializeField] private RectTransform touchSurfaceRect;
-    [SerializeField] private Camera driverCamera;
-    [SerializeField] private Camera passengerCamera;
+
+    [Header("Mouse Screen Point")]
+    [SerializeField] private ScreenPointMode screenPointMode = ScreenPointMode.RawInputPosition;
 
     [Header("Raycast")]
     [SerializeField] private bool raycastHitObject = true;
-    [SerializeField] private bool temporarilySetCanvasCameraForRaycast = true;
 
     [Header("OLED Layout")]
     [SerializeField] private float driverWidth = 2650f;
@@ -208,28 +214,27 @@ public class OledMouseTouchCoordinateLogger : MonoBehaviour
     {
         coord = new TouchCoord();
 
-        Vector2 rawMousePosition = GetMousePosition();
-
-        if (!TryResolveSourceAndCamera(
-                rawMousePosition,
-                out string source,
-                out Camera targetCamera,
-                out Vector2 cameraScreenPoint
-            ))
+        if (displayCanvas == null || touchSurfaceRect == null)
         {
+            Debug.LogWarning("[Mouse→OLED] DisplayCanvas or TouchSurfaceRect is not assigned.");
             return false;
         }
 
-        if (targetCamera == null || touchSurfaceRect == null)
+        Camera eventCamera = displayCanvas.worldCamera;
+
+        if (eventCamera == null && displayCanvas.renderMode != RenderMode.ScreenSpaceOverlay)
         {
-            Debug.LogWarning("[Mouse→OLED] Camera or TouchSurfaceRect is not assigned.");
+            Debug.LogWarning("[Mouse→OLED] DisplayCanvas.worldCamera is not assigned.");
             return false;
         }
+
+        Vector2 mousePosition = GetMousePosition();
+        Vector2 screenPoint = ResolveScreenPoint(mousePosition, eventCamera);
 
         if (!RectTransformUtility.ScreenPointToLocalPointInRectangle(
                 touchSurfaceRect,
-                cameraScreenPoint,
-                targetCamera,
+                screenPoint,
+                eventCamera,
                 out Vector2 canvasLocalPoint
             ))
         {
@@ -238,8 +243,8 @@ public class OledMouseTouchCoordinateLogger : MonoBehaviour
         }
 
         if (!TryCanvasLocalToTouchCoord(
-                source,
                 canvasLocalPoint,
+                out string source,
                 out int touchX,
                 out int touchY
             ))
@@ -251,7 +256,7 @@ public class OledMouseTouchCoordinateLogger : MonoBehaviour
 
         if (raycastHitObject)
         {
-            hitObject = RaycastTop(cameraScreenPoint, targetCamera);
+            hitObject = RaycastTop(screenPoint);
         }
 
         coord = new TouchCoord
@@ -260,111 +265,22 @@ public class OledMouseTouchCoordinateLogger : MonoBehaviour
             x = touchX,
             y = touchY,
             canvasLocal = canvasLocalPoint,
-            screenPoint = cameraScreenPoint,
-            hitObject = hitObject
+            screenPoint = screenPoint,
+            hitObject = hitObject,
+            eventCamera = eventCamera
         };
 
         return true;
     }
 
-    private bool TryResolveSourceAndCamera(
-        Vector2 rawMousePosition,
-        out string source,
-        out Camera targetCamera,
-        out Vector2 cameraScreenPoint
-    )
+    private Vector2 ResolveScreenPoint(Vector2 rawMousePosition, Camera eventCamera)
     {
-        source = "";
-        targetCamera = null;
-        cameraScreenPoint = rawMousePosition;
-
-        if (sourceMode == SourceMode.ForceDriver)
+        if (screenPointMode == ScreenPointMode.RawInputPosition)
         {
-            source = "driver";
-            targetCamera = driverCamera;
-            cameraScreenPoint = GetScreenPointForCamera(rawMousePosition, driverCamera);
-            return targetCamera != null;
+            return rawMousePosition;
         }
 
-        if (sourceMode == SourceMode.ForcePassenger)
-        {
-            source = "passenger";
-            targetCamera = passengerCamera;
-            cameraScreenPoint = GetScreenPointForCamera(rawMousePosition, passengerCamera);
-            return targetCamera != null;
-        }
-
-        if (TryResolveByDisplay(
-                rawMousePosition,
-                out source,
-                out targetCamera,
-                out cameraScreenPoint
-            ))
-        {
-            return true;
-        }
-
-        if (fallbackSourceMode == SourceMode.ForcePassenger)
-        {
-            source = "passenger";
-            targetCamera = passengerCamera;
-            cameraScreenPoint = GetScreenPointForCamera(rawMousePosition, passengerCamera);
-            return targetCamera != null;
-        }
-
-        source = "driver";
-        targetCamera = driverCamera;
-        cameraScreenPoint = GetScreenPointForCamera(rawMousePosition, driverCamera);
-        return targetCamera != null;
-    }
-
-    private bool TryResolveByDisplay(
-        Vector2 rawMousePosition,
-        out string source,
-        out Camera targetCamera,
-        out Vector2 cameraScreenPoint
-    )
-    {
-        source = "";
-        targetCamera = null;
-        cameraScreenPoint = rawMousePosition;
-
-        Vector3 relativeMouse = Display.RelativeMouseAt(rawMousePosition);
-
-        bool hasRelativeMouse =
-            Mathf.Abs(relativeMouse.x) > 0.001f
-            || Mathf.Abs(relativeMouse.y) > 0.001f
-            || Mathf.Abs(relativeMouse.z) > 0.001f;
-
-        if (!hasRelativeMouse)
-        {
-            return false;
-        }
-
-        int displayIndex = Mathf.RoundToInt(relativeMouse.z);
-
-        if (driverCamera != null && displayIndex == driverCamera.targetDisplay)
-        {
-            source = "driver";
-            targetCamera = driverCamera;
-            cameraScreenPoint = new Vector2(relativeMouse.x, relativeMouse.y);
-            return true;
-        }
-
-        if (passengerCamera != null && displayIndex == passengerCamera.targetDisplay)
-        {
-            source = "passenger";
-            targetCamera = passengerCamera;
-            cameraScreenPoint = new Vector2(relativeMouse.x, relativeMouse.y);
-            return true;
-        }
-
-        return false;
-    }
-
-    private Vector2 GetScreenPointForCamera(Vector2 rawMousePosition, Camera targetCamera)
-    {
-        if (targetCamera == null)
+        if (eventCamera == null)
         {
             return rawMousePosition;
         }
@@ -383,7 +299,7 @@ public class OledMouseTouchCoordinateLogger : MonoBehaviour
 
         int displayIndex = Mathf.RoundToInt(relativeMouse.z);
 
-        if (displayIndex == targetCamera.targetDisplay)
+        if (displayIndex == eventCamera.targetDisplay)
         {
             return new Vector2(relativeMouse.x, relativeMouse.y);
         }
@@ -392,23 +308,35 @@ public class OledMouseTouchCoordinateLogger : MonoBehaviour
     }
 
     private bool TryCanvasLocalToTouchCoord(
-        string source,
         Vector2 canvasLocalPoint,
+        out string source,
         out int touchX,
         out int touchY
     )
     {
+        source = "";
         touchX = 0;
         touchY = 0;
-
-        if (touchSurfaceRect == null)
-        {
-            return false;
-        }
 
         Rect rect = touchSurfaceRect.rect;
 
         float globalX = canvasLocalPoint.x - rect.xMin;
+
+        if (sourceMode == SourceMode.ForceDriver)
+        {
+            source = "driver";
+        }
+        else if (sourceMode == SourceMode.ForcePassenger)
+        {
+            source = "passenger";
+        }
+        else
+        {
+            source = globalX < passengerOffsetX
+                ? "driver"
+                : "passenger";
+        }
+
         float localX = globalX;
 
         if (source == "passenger")
@@ -432,7 +360,7 @@ public class OledMouseTouchCoordinateLogger : MonoBehaviour
         return true;
     }
 
-    private GameObject RaycastTop(Vector2 screenPoint, Camera targetCamera)
+    private GameObject RaycastTop(Vector2 screenPoint)
     {
         EventSystem eventSystem = EventSystem.current;
 
@@ -441,24 +369,11 @@ public class OledMouseTouchCoordinateLogger : MonoBehaviour
             return null;
         }
 
-        Camera previousWorldCamera = null;
-
-        if (temporarilySetCanvasCameraForRaycast && displayCanvas != null)
-        {
-            previousWorldCamera = displayCanvas.worldCamera;
-            displayCanvas.worldCamera = targetCamera;
-        }
-
         PointerEventData eventData = new PointerEventData(eventSystem);
         eventData.position = screenPoint;
 
         raycastResults.Clear();
         eventSystem.RaycastAll(eventData, raycastResults);
-
-        if (temporarilySetCanvasCameraForRaycast && displayCanvas != null)
-        {
-            displayCanvas.worldCamera = previousWorldCamera;
-        }
 
         if (raycastResults.Count == 0)
         {
@@ -474,6 +389,10 @@ public class OledMouseTouchCoordinateLogger : MonoBehaviour
             ? "None"
             : GetHierarchyPath(coord.hitObject);
 
+        string cameraName = coord.eventCamera == null
+            ? "None"
+            : coord.eventCamera.name;
+
         Debug.Log(
             "[Mouse→OLED] "
             + phase
@@ -487,6 +406,8 @@ public class OledMouseTouchCoordinateLogger : MonoBehaviour
             + coord.canvasLocal
             + " screen="
             + coord.screenPoint
+            + " camera="
+            + cameraName
             + " hit="
             + hitName
         );
