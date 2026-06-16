@@ -1,367 +1,297 @@
-using System.Collections;
+using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.EventSystems;
 using UnityEngine.UI;
 
-public class OledTouchDebugOverlay : MonoBehaviour
+public static class UiLocalGraphicRaycastUtility
 {
-    [Header("Event")]
-    [SerializeField] private GuiEventDispatcher eventDispatcher;
-
-    [Header("Canvas")]
-    [SerializeField] private Canvas displayCanvas;
-    [SerializeField] private RectTransform touchSurfaceRect;
-
-    [Header("OLED Layout")]
-    [SerializeField] private float driverWidth = 2650f;
-    [SerializeField] private float passengerOffsetX = 2650f;
-    [SerializeField] private bool yOriginTop = true;
-    [SerializeField] private bool clampCoordinate = true;
-
-    [Header("Debug Circle")]
-    [SerializeField] private bool showDebugCircle = true;
-    [SerializeField] private bool showDown = true;
-    [SerializeField] private bool showMove = false;
-    [SerializeField] private bool showUp = true;
-    [SerializeField] private float circleSize = 80f;
-    [SerializeField] private float lifeTime = 1.0f;
-    [SerializeField] private Color circleColor = new Color(1f, 0f, 0f, 0.8f);
-
-    [Header("Log")]
-    [SerializeField] private bool logTouchPosition = true;
-
-    private RectTransform debugLayer;
-    private Sprite circleSprite;
-
-    private void Awake()
-    {
-        ResolveReferences();
-        EnsureDebugLayer();
-        EnsureCircleSprite();
-    }
-
-    private void OnEnable()
-    {
-        ResolveReferences();
-        EnsureDebugLayer();
-        EnsureCircleSprite();
-
-        if (eventDispatcher != null)
-        {
-            eventDispatcher.TouchReceived -= OnTouchReceived;
-            eventDispatcher.TouchReceived += OnTouchReceived;
-        }
-    }
-
-    private void OnDisable()
-    {
-        if (eventDispatcher != null)
-        {
-            eventDispatcher.TouchReceived -= OnTouchReceived;
-        }
-    }
-
-    private void OnTouchReceived(GuiEventMessage message)
-    {
-        if (!showDebugCircle)
-        {
-            return;
-        }
-
-        if (message == null || message.TouchPayload == null)
-        {
-            return;
-        }
-
-        GuiEventTouchPayload payload = message.TouchPayload;
-
-        string sourceText = NormalizeText(payload.source);
-        string eventText = NormalizeText(payload.GetTouchEventText());
-
-        if (!ShouldShowEvent(eventText))
-        {
-            return;
-        }
-
-        if (!TryConvertToCanvasLocal(
-                payload,
-                sourceText,
-                out Vector2 canvasLocalPoint,
-                out Vector2 sourceLocalPoint,
-                out string interpretedHalf
-            ))
-        {
-            return;
-        }
-
-        if (logTouchPosition)
-        {
-            Debug.Log(
-                "[OLED Touch Debug Circle] source="
-                + sourceText
-                + " event="
-                + eventText
-                + " touch=("
-                + payload.x
-                + ", "
-                + payload.y
-                + ") sourceLocal="
-                + sourceLocalPoint
-                + " canvasLocal="
-                + canvasLocalPoint
-                + " interpretedHalf="
-                + interpretedHalf
-                + " rectWidth="
-                + touchSurfaceRect.rect.width
-                + " rectHeight="
-                + touchSurfaceRect.rect.height
-            );
-        }
-
-        ShowCircle(canvasLocalPoint);
-    }
-
-    private bool ShouldShowEvent(string eventText)
-    {
-        if (eventText == "down")
-        {
-            return showDown;
-        }
-
-        if (eventText == "move")
-        {
-            return showMove;
-        }
-
-        if (eventText == "up")
-        {
-            return showUp;
-        }
-
-        return true;
-    }
-
-    private bool TryConvertToCanvasLocal(
-        GuiEventTouchPayload payload,
-        string normalizedSource,
-        out Vector2 canvasLocalPoint,
-        out Vector2 sourceLocalPoint,
-        out string interpretedHalf
+    public static bool TryRaycastTopGraphic(
+        Canvas targetCanvas,
+        RectTransform referenceRect,
+        Vector2 referenceLocalPoint,
+        Vector2 screenPoint,
+        List<Graphic> graphicBuffer,
+        out RaycastResult raycastResult
     )
     {
-        canvasLocalPoint = Vector2.zero;
-        sourceLocalPoint = Vector2.zero;
-        interpretedHalf = "Unknown";
+        raycastResult = new RaycastResult();
 
-        if (touchSurfaceRect == null)
+        if (targetCanvas == null || referenceRect == null || graphicBuffer == null)
         {
-            Debug.LogWarning("[OLED Touch Debug Circle] Touch Surface Rect is not assigned.");
             return false;
         }
 
-        Rect rect = touchSurfaceRect.rect;
+        GraphicRaycaster raycaster = targetCanvas.GetComponent<GraphicRaycaster>();
 
-        float x = payload.x;
-        float y = payload.y;
+        graphicBuffer.Clear();
+        targetCanvas.GetComponentsInChildren(false, graphicBuffer);
 
-        if (clampCoordinate)
+        Vector3 worldPoint = referenceRect.TransformPoint(
+            new Vector3(referenceLocalPoint.x, referenceLocalPoint.y, 0f)
+        );
+
+        Graphic topAnyGraphic = null;
+        int topAnyDepth = int.MinValue;
+
+        Graphic topInteractiveGraphic = null;
+        GameObject topInteractiveHandler = null;
+        int topInteractiveDepth = int.MinValue;
+
+        for (int i = 0; i < graphicBuffer.Count; i++)
         {
-            x = Mathf.Clamp(x, 0f, driverWidth);
-            y = Mathf.Clamp(y, 0f, rect.height);
+            Graphic graphic = graphicBuffer[i];
+
+            if (!IsGraphicCandidate(graphic))
+            {
+                continue;
+            }
+
+            RectTransform rectTransform = graphic.rectTransform;
+
+            if (rectTransform == null)
+            {
+                continue;
+            }
+
+            Vector3 localPoint = rectTransform.InverseTransformPoint(worldPoint);
+
+            if (!rectTransform.rect.Contains(localPoint))
+            {
+                continue;
+            }
+
+            if (!IsAllowedByCanvasGroups(graphic.transform))
+            {
+                continue;
+            }
+
+            if (graphic.depth > topAnyDepth)
+            {
+                topAnyDepth = graphic.depth;
+                topAnyGraphic = graphic;
+            }
+
+            GameObject handlerObject = FindInteractiveHandler(graphic.gameObject);
+
+            if (handlerObject != null && graphic.depth > topInteractiveDepth)
+            {
+                topInteractiveDepth = graphic.depth;
+                topInteractiveGraphic = graphic;
+                topInteractiveHandler = handlerObject;
+            }
         }
 
-        float globalX = x;
+        if (topInteractiveHandler != null)
+        {
+            raycastResult = CreateRaycastResult(
+                topInteractiveHandler,
+                raycaster,
+                screenPoint,
+                topInteractiveDepth,
+                targetCanvas
+            );
 
-        if (normalizedSource == "passenger")
-        {
-            globalX = passengerOffsetX + x;
+            Debug.Log(
+                "[UI Local Raycast] mode=Interactive"
+                + " graphic="
+                + GetHierarchyPath(topInteractiveGraphic.gameObject)
+                + " handler="
+                + GetHierarchyPath(topInteractiveHandler)
+                + " depth="
+                + topInteractiveDepth
+                + GetSelectableStateText(topInteractiveHandler)
+            );
+
+            return true;
         }
-        else if (normalizedSource != "driver")
+
+        if (topAnyGraphic != null)
         {
-            Debug.LogWarning("[OLED Touch Debug Circle] Unknown source: " + payload.source);
+            raycastResult = CreateRaycastResult(
+                topAnyGraphic.gameObject,
+                raycaster,
+                screenPoint,
+                topAnyDepth,
+                targetCanvas
+            );
+
+            Debug.Log(
+                "[UI Local Raycast] mode=GraphicOnly"
+                + " graphic="
+                + GetHierarchyPath(topAnyGraphic.gameObject)
+                + " handler=None"
+                + " depth="
+                + topAnyDepth
+            );
+
+            return true;
+        }
+
+        Debug.Log("[UI Local Raycast] mode=None");
+        return false;
+    }
+
+    private static bool IsGraphicCandidate(Graphic graphic)
+    {
+        if (graphic == null)
+        {
             return false;
         }
 
-        float canvasLocalX = rect.xMin + globalX;
-        float canvasLocalY = yOriginTop
-            ? rect.yMax - y
-            : rect.yMin + y;
+        if (!graphic.gameObject.activeInHierarchy)
+        {
+            return false;
+        }
 
-        canvasLocalPoint = new Vector2(canvasLocalX, canvasLocalY);
-        sourceLocalPoint = new Vector2(x, canvasLocalY);
+        if (!graphic.enabled)
+        {
+            return false;
+        }
 
-        interpretedHalf = canvasLocalX < 0f
-            ? "DriverHalf"
-            : "PassengerHalf";
+        if (!graphic.raycastTarget)
+        {
+            return false;
+        }
+
+        if (graphic.canvasRenderer == null || graphic.canvasRenderer.cull)
+        {
+            return false;
+        }
 
         return true;
     }
 
-    private void ShowCircle(Vector2 canvasLocalPoint)
+    private static RaycastResult CreateRaycastResult(
+        GameObject target,
+        BaseRaycaster raycaster,
+        Vector2 screenPoint,
+        int depth,
+        Canvas canvas
+    )
     {
-        EnsureDebugLayer();
-        EnsureCircleSprite();
-
-        if (debugLayer == null || circleSprite == null)
+        return new RaycastResult
         {
-            return;
-        }
-
-        GameObject circleObject = new GameObject("TouchDebugCircle", typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
-        circleObject.transform.SetParent(debugLayer, false);
-
-        RectTransform rectTransform = circleObject.GetComponent<RectTransform>();
-        rectTransform.anchorMin = new Vector2(0.5f, 0.5f);
-        rectTransform.anchorMax = new Vector2(0.5f, 0.5f);
-        rectTransform.pivot = new Vector2(0.5f, 0.5f);
-        rectTransform.sizeDelta = new Vector2(circleSize, circleSize);
-        rectTransform.anchoredPosition = canvasLocalPoint;
-
-        Image image = circleObject.GetComponent<Image>();
-        image.sprite = circleSprite;
-        image.color = circleColor;
-        image.raycastTarget = false;
-
-        circleObject.transform.SetAsLastSibling();
-
-        StartCoroutine(FadeAndDestroy(image, lifeTime));
+            gameObject = target,
+            module = raycaster,
+            screenPosition = screenPoint,
+            depth = depth,
+            sortingLayer = canvas == null ? 0 : canvas.sortingLayerID,
+            sortingOrder = canvas == null ? 0 : canvas.sortingOrder
+        };
     }
 
-    private IEnumerator FadeAndDestroy(Image image, float duration)
+    private static GameObject FindInteractiveHandler(GameObject startObject)
     {
-        if (image == null)
+        if (startObject == null)
         {
-            yield break;
+            return null;
         }
 
-        float elapsed = 0f;
-        Color startColor = image.color;
+        GameObject clickHandler = ExecuteEvents.GetEventHandler<IPointerClickHandler>(startObject);
 
-        while (elapsed < duration)
+        if (clickHandler != null)
         {
-            if (image == null)
+            return clickHandler;
+        }
+
+        GameObject downHandler = ExecuteEvents.GetEventHandler<IPointerDownHandler>(startObject);
+
+        if (downHandler != null)
+        {
+            return downHandler;
+        }
+
+        GameObject dragHandler = ExecuteEvents.GetEventHandler<IDragHandler>(startObject);
+
+        if (dragHandler != null)
+        {
+            return dragHandler;
+        }
+
+        GameObject beginDragHandler = ExecuteEvents.GetEventHandler<IBeginDragHandler>(startObject);
+
+        if (beginDragHandler != null)
+        {
+            return beginDragHandler;
+        }
+
+        GameObject endDragHandler = ExecuteEvents.GetEventHandler<IEndDragHandler>(startObject);
+
+        if (endDragHandler != null)
+        {
+            return endDragHandler;
+        }
+
+        return null;
+    }
+
+    private static bool IsAllowedByCanvasGroups(Transform target)
+    {
+        Transform current = target;
+
+        while (current != null)
+        {
+            CanvasGroup[] groups = current.GetComponents<CanvasGroup>();
+
+            for (int i = 0; i < groups.Length; i++)
             {
-                yield break;
+                CanvasGroup group = groups[i];
+
+                if (group == null)
+                {
+                    continue;
+                }
+
+                if (!group.blocksRaycasts)
+                {
+                    return false;
+                }
+
+                if (group.ignoreParentGroups)
+                {
+                    return true;
+                }
             }
 
-            elapsed += Time.unscaledDeltaTime;
-
-            float rate = duration <= 0f
-                ? 1f
-                : Mathf.Clamp01(elapsed / duration);
-
-            Color color = startColor;
-            color.a = Mathf.Lerp(startColor.a, 0f, rate);
-            image.color = color;
-
-            yield return null;
+            current = current.parent;
         }
 
-        if (image != null)
-        {
-            Destroy(image.gameObject);
-        }
+        return true;
     }
 
-    private void EnsureDebugLayer()
+    private static string GetSelectableStateText(GameObject target)
     {
-        if (debugLayer != null)
-        {
-            return;
-        }
-
-        if (touchSurfaceRect == null)
-        {
-            return;
-        }
-
-        Transform existing = touchSurfaceRect.Find("OledTouchDebugOverlayLayer");
-
-        if (existing != null)
-        {
-            debugLayer = existing.GetComponent<RectTransform>();
-            return;
-        }
-
-        GameObject layerObject = new GameObject("OledTouchDebugOverlayLayer", typeof(RectTransform));
-        layerObject.transform.SetParent(touchSurfaceRect, false);
-
-        debugLayer = layerObject.GetComponent<RectTransform>();
-        debugLayer.anchorMin = Vector2.zero;
-        debugLayer.anchorMax = Vector2.one;
-        debugLayer.offsetMin = Vector2.zero;
-        debugLayer.offsetMax = Vector2.zero;
-        debugLayer.pivot = new Vector2(0.5f, 0.5f);
-
-        layerObject.transform.SetAsLastSibling();
-    }
-
-    private void EnsureCircleSprite()
-    {
-        if (circleSprite != null)
-        {
-            return;
-        }
-
-        int size = 64;
-        float radius = size * 0.5f - 2f;
-        float center = (size - 1) * 0.5f;
-
-        Texture2D texture = new Texture2D(size, size, TextureFormat.RGBA32, false);
-        texture.name = "RuntimeTouchDebugCircleTexture";
-
-        for (int y = 0; y < size; y++)
-        {
-            for (int x = 0; x < size; x++)
-            {
-                float dx = x - center;
-                float dy = y - center;
-                float distance = Mathf.Sqrt(dx * dx + dy * dy);
-
-                Color color = distance <= radius
-                    ? Color.white
-                    : Color.clear;
-
-                texture.SetPixel(x, y, color);
-            }
-        }
-
-        texture.Apply();
-
-        circleSprite = Sprite.Create(
-            texture,
-            new Rect(0f, 0f, size, size),
-            new Vector2(0.5f, 0.5f),
-            100f
-        );
-
-        circleSprite.name = "RuntimeTouchDebugCircleSprite";
-    }
-
-    private void ResolveReferences()
-    {
-        if (eventDispatcher == null)
-        {
-            eventDispatcher = FindFirstObjectByType<GuiEventDispatcher>();
-        }
-
-        if (displayCanvas == null)
-        {
-            displayCanvas = FindFirstObjectByType<Canvas>();
-        }
-
-        if (touchSurfaceRect == null && displayCanvas != null)
-        {
-            touchSurfaceRect = displayCanvas.GetComponent<RectTransform>();
-        }
-    }
-
-    private string NormalizeText(string value)
-    {
-        if (string.IsNullOrEmpty(value))
+        if (target == null)
         {
             return "";
         }
 
-        return value.Trim().ToLowerInvariant().Replace("_", "").Replace("-", "");
+        Selectable selectable = target.GetComponent<Selectable>();
+
+        if (selectable == null)
+        {
+            return "";
+        }
+
+        return " selectableInteractable=" + selectable.interactable;
+    }
+
+    private static string GetHierarchyPath(GameObject target)
+    {
+        if (target == null)
+        {
+            return "None";
+        }
+
+        string path = target.name;
+        Transform current = target.transform.parent;
+
+        while (current != null)
+        {
+            path = current.name + "/" + path;
+            current = current.parent;
+        }
+
+        return path;
     }
 }
