@@ -1,93 +1,76 @@
-using System;
-using UnityEngine;
-
-public static class GuiEventJsonParser
+public static class GuiEventType
 {
-    public static bool TryParse(
-        string rawJson,
-        out GuiEventMessage message,
-        out string errorMessage
-    )
+    public const string IgOn = "EVT_IG_ON";
+    public const string IgOff = "EVT_IG_OFF";
+
+    // Backend側の短縮表記も受ける。
+    public const string IgOnShort = "IG_ON";
+    public const string IgOffShort = "IG_OFF";
+
+    public const string ShifterChanged = "EVT_SHIFTER_CHANGED";
+
+    public const string HvacPopup = "EVT_HVAC_POPUP";
+    public const string HvacDisplayModeResult = "EVT_HVAC_DISPLAY_MODE_RESULT";
+
+    public const string MediaVolumeUp = "EVT_MEDIA_VOLUME_UP";
+    public const string MediaVolumeDown = "EVT_MEDIA_VOLUME_DOWN";
+
+    public const string SoundVolumeUp = "SIG_SOUND_VOLUME_UP";
+    public const string SoundVolumeDown = "SIG_SOUND_VOLUME_DOWN";
+
+    public const string LedSubToggleColor = "SIG_LED_SUB_TOGGLE_COLOR";
+    public const string LedSubTogglePattern = "SIG_LED_SUB_TOGGLE_PATTERN";
+
+    public const string Touch = "EVT_TOUCH";
+
+    public const string CloseModeStatus = "close_mode_sts";
+    public const string HalfModeStatus = "half_mode_sts";
+    public const string FullModeStatus = "full_mode_sts";
+    public const string OtherModeStatus = "other_mode_sts";
+
+    public static bool EqualsType(string actual, string expected)
     {
-        message = null;
-        errorMessage = "";
-
-        if (string.IsNullOrWhiteSpace(rawJson))
+        if (string.IsNullOrEmpty(actual) || string.IsNullOrEmpty(expected))
         {
-            errorMessage = "Raw json is empty.";
             return false;
         }
 
-        GuiEventMessageTypeEnvelope typeEnvelope;
-
-        try
-        {
-            typeEnvelope = JsonUtility.FromJson<GuiEventMessageTypeEnvelope>(rawJson);
-        }
-        catch (Exception exception)
-        {
-            errorMessage = "Failed to parse message type. " + exception.Message;
-            return false;
-        }
-
-        if (typeEnvelope == null)
-        {
-            errorMessage = "Message envelope is null.";
-            return false;
-        }
-
-        string messageType = typeEnvelope.GetMessageType();
-
-        if (string.IsNullOrWhiteSpace(messageType))
-        {
-            errorMessage = "message_type/type is missing.";
-            return false;
-        }
-
-        messageType = messageType.Trim();
-        message = new GuiEventMessage(messageType, rawJson);
-
-        try
-        {
-            FillPayload(rawJson, message);
-            return true;
-        }
-        catch (Exception exception)
-        {
-            errorMessage = "Failed to parse payload. " + exception.Message;
-            return false;
-        }
+        return actual.Trim().ToLowerInvariant() == expected.Trim().ToLowerInvariant();
     }
 
-    private static void FillPayload(string rawJson, GuiEventMessage message)
+    public static bool IsIgOn(string messageType)
     {
-        if (GuiEventType.EqualsType(message.MessageType, GuiEventType.ShifterChanged))
-        {
-            GuiEventShifterEnvelope envelope =
-                JsonUtility.FromJson<GuiEventShifterEnvelope>(rawJson);
+        return EqualsType(messageType, IgOn) || EqualsType(messageType, IgOnShort);
+    }
 
-            message.ShifterPayload = envelope == null ? null : envelope.payload;
-            return;
-        }
+    public static bool IsIgOff(string messageType)
+    {
+        return EqualsType(messageType, IgOff) || EqualsType(messageType, IgOffShort);
+    }
 
-        if (GuiEventType.EqualsType(message.MessageType, GuiEventType.Touch))
-        {
-            GuiEventTouchEnvelope envelope =
-                JsonUtility.FromJson<GuiEventTouchEnvelope>(rawJson);
+    public static bool IsVolumeUp(string messageType)
+    {
+        return EqualsType(messageType, MediaVolumeUp)
+            || EqualsType(messageType, SoundVolumeUp);
+    }
 
-            message.TouchPayload = envelope == null ? null : envelope.payload;
-            return;
-        }
+    public static bool IsVolumeDown(string messageType)
+    {
+        return EqualsType(messageType, MediaVolumeDown)
+            || EqualsType(messageType, SoundVolumeDown);
+    }
 
-        if (GuiEventType.EqualsType(message.MessageType, GuiEventType.HvacDisplayModeResult))
-        {
-            GuiEventHvacEnvelope envelope =
-                JsonUtility.FromJson<GuiEventHvacEnvelope>(rawJson);
+    public static bool IsLedSubSignal(string messageType)
+    {
+        return EqualsType(messageType, LedSubToggleColor)
+            || EqualsType(messageType, LedSubTogglePattern);
+    }
 
-            message.HvacPayload = envelope == null ? null : envelope.payload;
-            return;
-        }
-
-        JsonUtility.FromJson<GuiEventEmptyEnvelope>(rawJson);
+    public static bool IsMechaStatus(string messageType)
+    {
+        return EqualsType(messageType, CloseModeStatus)
+            || EqualsType(messageType, HalfModeStatus)
+            || EqualsType(messageType, FullModeStatus)
+            || EqualsType(messageType, OtherModeStatus);
     }
 }
