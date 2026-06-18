@@ -1,125 +1,93 @@
 using System;
+using UnityEngine;
 
-[Serializable]
-public class GuiEventMessageTypeEnvelope
+public static class GuiEventJsonParser
 {
-    public string message_type;
-    public string type;
-
-    public string GetMessageType()
+    public static bool TryParse(
+        string rawJson,
+        out GuiEventMessage message,
+        out string errorMessage
+    )
     {
-        if (!string.IsNullOrEmpty(message_type))
+        message = null;
+        errorMessage = "";
+
+        if (string.IsNullOrWhiteSpace(rawJson))
         {
-            return message_type;
+            errorMessage = "Raw json is empty.";
+            return false;
         }
 
-        if (!string.IsNullOrEmpty(type))
+        GuiEventMessageTypeEnvelope typeEnvelope;
+
+        try
         {
-            return type;
+            typeEnvelope = JsonUtility.FromJson<GuiEventMessageTypeEnvelope>(rawJson);
+        }
+        catch (Exception exception)
+        {
+            errorMessage = "Failed to parse message type. " + exception.Message;
+            return false;
         }
 
-        return "";
+        if (typeEnvelope == null)
+        {
+            errorMessage = "Message envelope is null.";
+            return false;
+        }
+
+        string messageType = typeEnvelope.GetMessageType();
+
+        if (string.IsNullOrWhiteSpace(messageType))
+        {
+            errorMessage = "message_type/type is missing.";
+            return false;
+        }
+
+        messageType = messageType.Trim();
+        message = new GuiEventMessage(messageType, rawJson);
+
+        try
+        {
+            FillPayload(rawJson, message);
+            return true;
+        }
+        catch (Exception exception)
+        {
+            errorMessage = "Failed to parse payload. " + exception.Message;
+            return false;
+        }
     }
-}
 
-[Serializable]
-public class GuiEventEmptyPayload
-{
-}
-
-[Serializable]
-public class GuiEventEmptyEnvelope
-{
-    public string message_type;
-    public string type;
-    public GuiEventEmptyPayload payload;
-}
-
-[Serializable]
-public class GuiEventShifterPayload
-{
-    public string gear;
-    public string shift;
-    public string value;
-
-    public string GetGearText()
+    private static void FillPayload(string rawJson, GuiEventMessage message)
     {
-        if (!string.IsNullOrEmpty(gear))
+        if (GuiEventType.EqualsType(message.MessageType, GuiEventType.ShifterChanged))
         {
-            return gear;
+            GuiEventShifterEnvelope envelope =
+                JsonUtility.FromJson<GuiEventShifterEnvelope>(rawJson);
+
+            message.ShifterPayload = envelope == null ? null : envelope.payload;
+            return;
         }
 
-        if (!string.IsNullOrEmpty(shift))
+        if (GuiEventType.EqualsType(message.MessageType, GuiEventType.Touch))
         {
-            return shift;
+            GuiEventTouchEnvelope envelope =
+                JsonUtility.FromJson<GuiEventTouchEnvelope>(rawJson);
+
+            message.TouchPayload = envelope == null ? null : envelope.payload;
+            return;
         }
 
-        if (!string.IsNullOrEmpty(value))
+        if (GuiEventType.EqualsType(message.MessageType, GuiEventType.HvacDisplayModeResult))
         {
-            return value;
+            GuiEventHvacEnvelope envelope =
+                JsonUtility.FromJson<GuiEventHvacEnvelope>(rawJson);
+
+            message.HvacPayload = envelope == null ? null : envelope.payload;
+            return;
         }
 
-        return "";
+        JsonUtility.FromJson<GuiEventEmptyEnvelope>(rawJson);
     }
-}
-
-[Serializable]
-public class GuiEventShifterEnvelope
-{
-    public string message_type;
-    public string type;
-    public GuiEventShifterPayload payload;
-}
-
-[Serializable]
-public class GuiEventTouchPayload
-{
-    public string source;
-    public int x;
-    public int y;
-
-    // backend文書側の可能性: event
-    public string @event;
-
-    // 口頭I/F側の可能性: event_type
-    public string event_type;
-
-    public string GetTouchEventText()
-    {
-        if (!string.IsNullOrEmpty(event_type))
-        {
-            return event_type;
-        }
-
-        if (!string.IsNullOrEmpty(@event))
-        {
-            return @event;
-        }
-
-        return "";
-    }
-}
-
-[Serializable]
-public class GuiEventTouchEnvelope
-{
-    public string message_type;
-    public string type;
-    public GuiEventTouchPayload payload;
-}
-
-[Serializable]
-public class GuiEventHvacPayload
-{
-    public string disp_mode;
-    public string result;
-    public string value;
-}
-
-[Serializable]
-public class GuiEventHvacEnvelope
-{
-    public string message_type;
-    public string type;
-    public GuiEventHvacPayload payload;
 }
