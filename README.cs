@@ -1,600 +1,470 @@
+using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Net.Sockets;
+using System.Text;
+using System.Threading;
 using UnityEngine;
-using UnityEngine.EventSystems;
-using UnityEngine.UI;
 
-public class OledTouchPointerBridge : MonoBehaviour
+public class GuiCommandTcpClientSender : MonoBehaviour
 {
-    private sealed class PointerState
-    {
-        public int pointerId;
-        public PointerEventData eventData;
-        public GameObject currentOverObject;
-        public GameObject pointerPress;
-        public GameObject rawPointerPress;
-        public GameObject pointerDrag;
-        public bool isPressed;
-        public bool isDragging;
-        public Vector2 lastScreenPosition;
-        public Camera eventCamera;
-    }
+    [Header("Connection Settings")]
+    [SerializeField] private string host = "127.0.0.1";
+    [SerializeField] private int port = 5000;
+    [SerializeField] private float reconnectIntervalSec = 2f;
+    [SerializeField] private bool autoConnect = true;
 
-    [Header("Event")]
+    [Header("Event Receive")]
     [SerializeField] private GuiEventDispatcher eventDispatcher;
 
-    [Header("Canvas")]
-    [SerializeField] private Canvas displayCanvas;
-    [SerializeField] private RectTransform touchSurfaceRect;
-
-    [Header("Raycast Cameras")]
-    [SerializeField] private Camera driverRaycastCamera;
-    [SerializeField] private Camera passengerRaycastCamera;
-
-    [Header("Raycast Mode")]
-    [SerializeField] private bool useLocalGraphicRaycast = true;
-    [SerializeField] private bool useEventSystemRaycastFallback = false;
-
-    [Tooltip("通常はfalse。CanvasEventCameraSwitcherと競合させない。")]
-    [SerializeField] private bool setCanvasWorldCameraOnTouch = false;
-
-    [Header("OLED Layout")]
-    [SerializeField] private float driverWidth = 2650f;
-    [SerializeField] private float passengerOffsetX = 2650f;
-    [SerializeField] private bool yOriginTop = true;
-    [SerializeField] private bool clampCoordinate = true;
-
-    [Header("Pointer")]
-    [SerializeField] private bool enablePointerEvents = false;
-    [SerializeField] private int driverPointerId = 1001;
-    [SerializeField] private int passengerPointerId = 1002;
-    [SerializeField] private float dragThresholdPixels = 8f;
+    [Header("Queue")]
+    [SerializeField] private int maxSendQueueSize = 100;
+    [SerializeField] private int maxReceiveQueueSize = 200;
 
     [Header("Debug")]
-    [SerializeField] private bool logTouch = true;
-    [SerializeField] private bool logRaycastHit = true;
-    [SerializeField] private bool logPointerEvent = true;
+    [SerializeField] private bool logConnection = true;
+    [SerializeField] private bool logSendMessage = true;
+    [SerializeField] private bool logReceivedMessage = true;
 
-    private readonly List<RaycastResult> raycastResults = new List<RaycastResult>();
-    private readonly List<Graphic> graphicBuffer = new List<Graphic>();
+    private readonly Queue<string> sendQueue = new Queue<string>();
+    private readonly Queue<string> receivedQueue = new Queue<string>();
+    private readonly Queue<string> logQueue = new Queue<string>();
 
-    private PointerState driverPointer;
-    private PointerState passengerPointer;
+    private readonly object sendLock = new object();
+    private readonly object receivedLock = new object();
+    private readonly object logLock = new object();
+
+    private readonly byte[] receiveBuffer = new byte[4096];
+    private readonly StringBuilder receiveTextBuffer = new StringBuilder();
+
+    private Thread workerThread;
+    private TcpClient currentClient;
+    private NetworkStream currentStream;
+
+    private volatile bool shouldRun;
+    private volatile bool isConnected;
+
+    public bool IsConnected
+    {
+        get { return isConnected; }
+    }
 
     private void Awake()
     {
         ResolveReferences();
-        InitializePointerStates();
     }
 
-    private void OnEnable()
+    private void Start()
     {
         ResolveReferences();
-        InitializePointerStates();
 
-        if (eventDispatcher != null)
+        if (autoConnect)
         {
-            eventDispatcher.TouchReceived -= OnTouchReceived;
-            eventDispatcher.TouchReceived += OnTouchReceived;
+            Connect();
         }
     }
 
-    private void OnDisable()
+    private void Update()
     {
-        if (eventDispatcher != null)
-        {
-            eventDispatcher.TouchReceived -= OnTouchReceived;
-        }
-
-        ResetPointerState(driverPointer);
-        ResetPointerState(passengerPointer);
+        FlushLogs();
+        FlushReceivedMessages();
     }
 
-    private void OnTouchReceived(GuiEventMessage message)
+    private void OnDestroy()
     {
-        if (message == null || message.TouchPayload == null)
-        {
-            Debug.LogWarning("[OLED Pointer] Touch payload is null.");
-            return;
-        }
-
-        GuiEventTouchPayload payload = message.TouchPayload;
-
-        string sourceText = NormalizeText(payload.source);
-        string eventText = NormalizeText(payload.GetTouchEventText());
-
-        PointerState pointerState = GetPointerState(sourceText);
-        Camera sourceCamera = GetRaycastCamera(sourceText);
-
-        if (pointerState == null)
-        {
-            Debug.LogWarning("[OLED Pointer] Unknown source: " + payload.source);
-            return;
-        }
-
-        if (sourceCamera == null)
-        {
-            Debug.LogWarning("[OLED Pointer] Raycast camera is not assigned for source=" + sourceText);
-            return;
-        }
-
-        if (!TryConvertToPoints(
-                payload,
-                sourceText,
-                sourceCamera,
-                out Vector2 screenPoint,
-                out Vector2 canvasLocalPoint,
-                out Vector2 sourceLocalPoint
-            ))
-        {
-            Debug.LogWarning("[OLED Pointer] Failed to convert touch coordinate.");
-            return;
-        }
-
-        if (logTouch)
-        {
-            Debug.Log(
-                "[OLED Pointer] source="
-                + sourceText
-                + " event="
-                + eventText
-                + " touch=("
-                + payload.x
-                + ", "
-                + payload.y
-                + ") sourceLocal="
-                + sourceLocalPoint
-                + " canvasLocal="
-                + canvasLocalPoint
-                + " screen="
-                + screenPoint
-                + " camera="
-                + sourceCamera.name
-            );
-        }
-
-        GameObject hitObject = RaycastTop(
-            screenPoint,
-            canvasLocalPoint,
-            sourceCamera,
-            out RaycastResult topResult,
-            out string hitMethod
-        );
-
-        if (logRaycastHit)
-        {
-            string hitName = hitObject == null ? "None" : GetHierarchyPath(hitObject);
-            Debug.Log("[OLED Pointer Raycast] hit=" + hitName + " hitMethod=" + hitMethod);
-        }
-
-        if (!enablePointerEvents)
-        {
-            return;
-        }
-
-        if (eventText == "down")
-        {
-            HandlePointerDown(pointerState, screenPoint, topResult, sourceCamera);
-            return;
-        }
-
-        if (eventText == "move")
-        {
-            HandlePointerMove(pointerState, screenPoint, topResult);
-            return;
-        }
-
-        if (eventText == "up")
-        {
-            HandlePointerUp(pointerState, screenPoint, topResult);
-            return;
-        }
-
-        Debug.LogWarning("[OLED Pointer] Unknown touch event: " + payload.GetTouchEventText());
+        Disconnect();
     }
 
-    private bool TryConvertToPoints(
-        GuiEventTouchPayload payload,
-        string normalizedSource,
-        Camera sourceCamera,
-        out Vector2 screenPoint,
-        out Vector2 canvasLocalPoint,
-        out Vector2 sourceLocalPoint
-    )
+    private void OnApplicationQuit()
     {
-        screenPoint = Vector2.zero;
-        canvasLocalPoint = Vector2.zero;
-        sourceLocalPoint = Vector2.zero;
+        Disconnect();
+    }
 
-        if (touchSurfaceRect == null || sourceCamera == null)
+    public void Connect()
+    {
+        if (workerThread != null && workerThread.IsAlive)
+        {
+            return;
+        }
+
+        shouldRun = true;
+
+        workerThread = new Thread(RunClientLoop);
+        workerThread.IsBackground = true;
+        workerThread.Start();
+    }
+
+    public void Disconnect()
+    {
+        shouldRun = false;
+        isConnected = false;
+
+        CloseCurrentClient();
+
+        if (workerThread != null && workerThread.IsAlive)
+        {
+            workerThread.Join(500);
+        }
+
+        workerThread = null;
+    }
+
+    public void SendCommand(string messageType)
+    {
+        SendRawJson(GuiCommandFactory.CreateCommand(messageType));
+    }
+
+    public void SendCommand(string messageType, string payloadJson)
+    {
+        SendRawJson(GuiCommandFactory.CreateCommand(messageType, payloadJson));
+    }
+
+    public void SendRawJson(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return;
+        }
+
+        lock (sendLock)
+        {
+            while (sendQueue.Count >= maxSendQueueSize)
+            {
+                sendQueue.Dequeue();
+                EnqueueLog("[GUI TCP] Send queue is full. Dropped oldest message.");
+            }
+
+            sendQueue.Enqueue(json);
+        }
+
+        if (logSendMessage)
+        {
+            EnqueueLog("[GUI TCP Queued] " + json);
+        }
+    }
+
+    private void RunClientLoop()
+    {
+        while (shouldRun)
+        {
+            try
+            {
+                EnqueueLog("[GUI TCP] Connecting to " + host + ":" + port);
+
+                using (TcpClient client = new TcpClient())
+                {
+                    currentClient = client;
+                    client.NoDelay = true;
+                    client.Connect(host, port);
+
+                    using (NetworkStream stream = client.GetStream())
+                    {
+                        currentStream = stream;
+                        isConnected = true;
+
+                        ClearReceiveTextBuffer();
+
+                        EnqueueLog("[GUI TCP] Connected.");
+
+                        while (shouldRun && IsClientAlive(client))
+                        {
+                            ReceiveAvailableMessages(stream);
+                            SendQueuedMessages(stream);
+
+                            Thread.Sleep(10);
+                        }
+                    }
+                }
+            }
+            catch (SocketException exception)
+            {
+                EnqueueLog("[GUI TCP] Socket error: " + exception.Message);
+            }
+            catch (IOException exception)
+            {
+                EnqueueLog("[GUI TCP] IO error: " + exception.Message);
+            }
+            catch (Exception exception)
+            {
+                EnqueueLog("[GUI TCP] Error: " + exception.Message);
+            }
+            finally
+            {
+                isConnected = false;
+                currentStream = null;
+                CloseCurrentClient();
+                EnqueueLog("[GUI TCP] Disconnected.");
+            }
+
+            if (!shouldRun)
+            {
+                break;
+            }
+
+            int sleepMs = Mathf.Max(100, Mathf.RoundToInt(reconnectIntervalSec * 1000f));
+            Thread.Sleep(sleepMs);
+        }
+    }
+
+    private bool IsClientAlive(TcpClient client)
+    {
+        if (client == null)
         {
             return false;
         }
 
-        Rect rect = touchSurfaceRect.rect;
-
-        float x = payload.x;
-        float y = payload.y;
-
-        if (clampCoordinate)
+        if (!client.Connected)
         {
-            x = Mathf.Clamp(x, 0f, driverWidth);
-            y = Mathf.Clamp(y, 0f, rect.height);
+            return false;
         }
 
-        float globalX = x;
-
-        if (normalizedSource == "passenger")
+        try
         {
-            globalX = passengerOffsetX + x;
+            Socket socket = client.Client;
+
+            if (socket == null)
+            {
+                return false;
+            }
+
+            bool disconnected = socket.Poll(0, SelectMode.SelectRead)
+                && socket.Available == 0;
+
+            return !disconnected;
         }
-
-        float canvasLocalX = rect.xMin + globalX;
-        float canvasLocalY = yOriginTop
-            ? rect.yMax - y
-            : rect.yMin + y;
-
-        sourceLocalPoint = new Vector2(x, canvasLocalY);
-        canvasLocalPoint = new Vector2(canvasLocalX, canvasLocalY);
-
-        Vector3 worldPoint = touchSurfaceRect.TransformPoint(
-            new Vector3(canvasLocalPoint.x, canvasLocalPoint.y, 0f)
-        );
-
-        screenPoint = RectTransformUtility.WorldToScreenPoint(sourceCamera, worldPoint);
-        return true;
+        catch
+        {
+            return false;
+        }
     }
 
-    private GameObject RaycastTop(
-        Vector2 screenPoint,
-        Vector2 canvasLocalPoint,
-        Camera sourceCamera,
-        out RaycastResult topResult,
-        out string hitMethod
-    )
+    private void ReceiveAvailableMessages(NetworkStream stream)
     {
-        topResult = new RaycastResult();
-        hitMethod = "None";
-
-        if (useLocalGraphicRaycast)
+        if (stream == null)
         {
-            bool localHit = UiLocalGraphicRaycastUtility.TryRaycastTopGraphic(
-                displayCanvas,
-                touchSurfaceRect,
-                canvasLocalPoint,
-                screenPoint,
-                graphicBuffer,
-                out topResult
-            );
+            return;
+        }
 
-            if (localHit)
+        while (stream.DataAvailable)
+        {
+            int readCount = stream.Read(receiveBuffer, 0, receiveBuffer.Length);
+
+            if (readCount <= 0)
             {
-                hitMethod = "LocalGraphic";
-                return topResult.gameObject;
+                return;
+            }
+
+            string text = Encoding.UTF8.GetString(receiveBuffer, 0, readCount);
+            AppendReceivedText(text);
+        }
+    }
+
+    private void AppendReceivedText(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return;
+        }
+
+        receiveTextBuffer.Append(text);
+
+        while (true)
+        {
+            string current = receiveTextBuffer.ToString();
+            int lineBreakIndex = current.IndexOf('\n');
+
+            if (lineBreakIndex < 0)
+            {
+                break;
+            }
+
+            string line = current.Substring(0, lineBreakIndex).Trim();
+
+            receiveTextBuffer.Remove(0, lineBreakIndex + 1);
+
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                continue;
+            }
+
+            EnqueueReceivedMessage(line);
+        }
+    }
+
+    private void SendQueuedMessages(NetworkStream stream)
+    {
+        if (stream == null)
+        {
+            return;
+        }
+
+        while (true)
+        {
+            string message = DequeueSendMessage();
+
+            if (message == null)
+            {
+                break;
+            }
+
+            string line = message + "\n";
+            byte[] data = Encoding.UTF8.GetBytes(line);
+
+            stream.Write(data, 0, data.Length);
+            stream.Flush();
+
+            if (logSendMessage)
+            {
+                EnqueueLog("[GUI TCP Sent] " + message);
             }
         }
+    }
 
-        if (useEventSystemRaycastFallback)
+    private string DequeueSendMessage()
+    {
+        lock (sendLock)
         {
-            GameObject eventSystemHit = RaycastByEventSystem(
-                screenPoint,
-                sourceCamera,
-                out topResult
-            );
-
-            if (eventSystemHit != null)
+            if (sendQueue.Count == 0)
             {
-                hitMethod = "EventSystem";
-                return eventSystemHit;
+                return null;
             }
-        }
 
-        return null;
+            return sendQueue.Dequeue();
+        }
     }
 
-    private GameObject RaycastByEventSystem(
-        Vector2 screenPoint,
-        Camera sourceCamera,
-        out RaycastResult topResult
-    )
+    private void EnqueueReceivedMessage(string message)
     {
-        topResult = new RaycastResult();
-
-        EventSystem eventSystem = EventSystem.current;
-
-        if (eventSystem == null)
+        lock (receivedLock)
         {
-            return null;
-        }
-
-        Camera previousCamera = null;
-
-        if (setCanvasWorldCameraOnTouch && displayCanvas != null)
-        {
-            previousCamera = displayCanvas.worldCamera;
-            displayCanvas.worldCamera = sourceCamera;
-        }
-
-        PointerEventData eventData = new PointerEventData(eventSystem);
-        eventData.position = screenPoint;
-
-        raycastResults.Clear();
-        eventSystem.RaycastAll(eventData, raycastResults);
-
-        if (setCanvasWorldCameraOnTouch && displayCanvas != null)
-        {
-            displayCanvas.worldCamera = previousCamera;
-        }
-
-        if (raycastResults.Count == 0)
-        {
-            return null;
-        }
-
-        topResult = raycastResults[0];
-        return topResult.gameObject;
-    }
-
-    private void HandlePointerDown(
-        PointerState state,
-        Vector2 screenPoint,
-        RaycastResult raycastResult,
-        Camera sourceCamera
-    )
-    {
-        EventSystem eventSystem = EventSystem.current;
-
-        if (eventSystem == null)
-        {
-            return;
-        }
-
-        ResetPointerState(state);
-
-        PointerEventData eventData = new PointerEventData(eventSystem);
-        eventData.pointerId = state.pointerId;
-        eventData.button = PointerEventData.InputButton.Left;
-        eventData.position = screenPoint;
-        eventData.pressPosition = screenPoint;
-        eventData.delta = Vector2.zero;
-        eventData.clickTime = Time.unscaledTime;
-        eventData.clickCount = 1;
-        eventData.pointerCurrentRaycast = raycastResult;
-        eventData.pointerPressRaycast = raycastResult;
-        eventData.useDragThreshold = true;
-
-        GameObject currentOver = raycastResult.gameObject;
-
-        state.eventData = eventData;
-        state.currentOverObject = currentOver;
-        state.lastScreenPosition = screenPoint;
-        state.isPressed = true;
-        state.eventCamera = sourceCamera;
-
-        if (currentOver == null)
-        {
-            LogPointer("Down hit none.");
-            return;
-        }
-
-        GameObject pointerPress = ExecuteEvents.ExecuteHierarchy(
-            currentOver,
-            eventData,
-            ExecuteEvents.pointerDownHandler
-        );
-
-        if (pointerPress == null)
-        {
-            pointerPress = ExecuteEvents.GetEventHandler<IPointerClickHandler>(currentOver);
-        }
-
-        GameObject pointerDrag = ExecuteEvents.GetEventHandler<IDragHandler>(currentOver);
-
-        eventData.pointerPress = pointerPress;
-        eventData.rawPointerPress = currentOver;
-        eventData.pointerDrag = pointerDrag;
-
-        state.pointerPress = pointerPress;
-        state.rawPointerPress = currentOver;
-        state.pointerDrag = pointerDrag;
-
-        if (pointerDrag != null)
-        {
-            ExecuteEvents.Execute(
-                pointerDrag,
-                eventData,
-                ExecuteEvents.initializePotentialDrag
-            );
-        }
-
-        LogPointer(
-            "Down current="
-            + GetObjectName(currentOver)
-            + " press="
-            + GetObjectName(pointerPress)
-            + " drag="
-            + GetObjectName(pointerDrag)
-        );
-    }
-
-    private void HandlePointerMove(
-        PointerState state,
-        Vector2 screenPoint,
-        RaycastResult raycastResult
-    )
-    {
-        if (state == null || !state.isPressed || state.eventData == null)
-        {
-            return;
-        }
-
-        PointerEventData eventData = state.eventData;
-
-        Vector2 delta = screenPoint - state.lastScreenPosition;
-
-        eventData.position = screenPoint;
-        eventData.delta = delta;
-        eventData.pointerCurrentRaycast = raycastResult;
-
-        state.currentOverObject = raycastResult.gameObject;
-
-        if (state.pointerDrag != null)
-        {
-            if (!state.isDragging)
+            while (receivedQueue.Count >= maxReceiveQueueSize)
             {
-                float movedDistance = Vector2.Distance(
-                    eventData.pressPosition,
-                    eventData.position
-                );
+                receivedQueue.Dequeue();
+                EnqueueLog("[GUI TCP] Receive queue is full. Dropped oldest message.");
+            }
 
-                if (movedDistance >= dragThresholdPixels)
+            receivedQueue.Enqueue(message);
+        }
+
+        if (logReceivedMessage)
+        {
+            EnqueueLog("[GUI TCP Received] " + message);
+        }
+    }
+
+    private void FlushReceivedMessages()
+    {
+        ResolveReferences();
+
+        while (true)
+        {
+            string message = null;
+
+            lock (receivedLock)
+            {
+                if (receivedQueue.Count > 0)
                 {
-                    ExecuteEvents.Execute(
-                        state.pointerDrag,
-                        eventData,
-                        ExecuteEvents.beginDragHandler
-                    );
-
-                    eventData.dragging = true;
-                    state.isDragging = true;
-
-                    LogPointer("BeginDrag target=" + GetObjectName(state.pointerDrag));
+                    message = receivedQueue.Dequeue();
                 }
             }
 
-            if (state.isDragging)
+            if (message == null)
             {
-                ExecuteEvents.Execute(
-                    state.pointerDrag,
-                    eventData,
-                    ExecuteEvents.dragHandler
-                );
+                break;
+            }
+
+            if (eventDispatcher == null)
+            {
+                Debug.LogWarning("[GUI TCP] EventDispatcher is not assigned. Message dropped: " + message);
+                continue;
+            }
+
+            eventDispatcher.ReceiveRawJson(message);
+        }
+    }
+
+    private void EnqueueLog(string log)
+    {
+        lock (logLock)
+        {
+            logQueue.Enqueue(log);
+        }
+    }
+
+    private void FlushLogs()
+    {
+        if (!logConnection && !logSendMessage && !logReceivedMessage)
+        {
+            ClearLogs();
+            return;
+        }
+
+        while (true)
+        {
+            string log = null;
+
+            lock (logLock)
+            {
+                if (logQueue.Count > 0)
+                {
+                    log = logQueue.Dequeue();
+                }
+            }
+
+            if (log == null)
+            {
+                break;
+            }
+
+            Debug.Log(log);
+        }
+    }
+
+    private void ClearLogs()
+    {
+        lock (logLock)
+        {
+            logQueue.Clear();
+        }
+    }
+
+    private void ClearReceiveTextBuffer()
+    {
+        receiveTextBuffer.Length = 0;
+    }
+
+    private void CloseCurrentClient()
+    {
+        try
+        {
+            if (currentStream != null)
+            {
+                currentStream.Close();
             }
         }
-
-        state.lastScreenPosition = screenPoint;
-    }
-
-    private void HandlePointerUp(
-        PointerState state,
-        Vector2 screenPoint,
-        RaycastResult raycastResult
-    )
-    {
-        if (state == null || !state.isPressed || state.eventData == null)
+        catch
         {
-            return;
+            // 終了時の例外は無視する。
+        }
+        finally
+        {
+            currentStream = null;
         }
 
-        PointerEventData eventData = state.eventData;
-
-        eventData.position = screenPoint;
-        eventData.delta = screenPoint - state.lastScreenPosition;
-        eventData.pointerCurrentRaycast = raycastResult;
-
-        GameObject currentOver = raycastResult.gameObject;
-
-        if (state.pointerPress != null)
+        try
         {
-            ExecuteEvents.Execute(
-                state.pointerPress,
-                eventData,
-                ExecuteEvents.pointerUpHandler
-            );
-        }
-
-        GameObject clickHandler = currentOver == null
-            ? null
-            : ExecuteEvents.GetEventHandler<IPointerClickHandler>(currentOver);
-
-        if (!state.isDragging && state.pointerPress != null && state.pointerPress == clickHandler)
-        {
-            ExecuteEvents.Execute(
-                state.pointerPress,
-                eventData,
-                ExecuteEvents.pointerClickHandler
-            );
-
-            LogPointer("Click target=" + GetObjectName(state.pointerPress));
-        }
-
-        if (state.isDragging && state.pointerDrag != null)
-        {
-            ExecuteEvents.Execute(
-                state.pointerDrag,
-                eventData,
-                ExecuteEvents.endDragHandler
-            );
-
-            LogPointer("EndDrag target=" + GetObjectName(state.pointerDrag));
-        }
-
-        ResetPointerState(state);
-    }
-
-    private void ResetPointerState(PointerState state)
-    {
-        if (state == null)
-        {
-            return;
-        }
-
-        state.eventData = null;
-        state.currentOverObject = null;
-        state.pointerPress = null;
-        state.rawPointerPress = null;
-        state.pointerDrag = null;
-        state.isPressed = false;
-        state.isDragging = false;
-        state.lastScreenPosition = Vector2.zero;
-        state.eventCamera = null;
-    }
-
-    private PointerState GetPointerState(string source)
-    {
-        if (source == "driver")
-        {
-            return driverPointer;
-        }
-
-        if (source == "passenger")
-        {
-            return passengerPointer;
-        }
-
-        return null;
-    }
-
-    private Camera GetRaycastCamera(string source)
-    {
-        if (source == "driver")
-        {
-            return driverRaycastCamera;
-        }
-
-        if (source == "passenger")
-        {
-            return passengerRaycastCamera;
-        }
-
-        return null;
-    }
-
-    private void InitializePointerStates()
-    {
-        if (driverPointer == null)
-        {
-            driverPointer = new PointerState
+            if (currentClient != null)
             {
-                pointerId = driverPointerId
-            };
+                currentClient.Close();
+            }
         }
-
-        if (passengerPointer == null)
+        catch
         {
-            passengerPointer = new PointerState
-            {
-                pointerId = passengerPointerId
-            };
+            // 終了時の例外は無視する。
+        }
+        finally
+        {
+            currentClient = null;
         }
     }
 
@@ -604,64 +474,5 @@ public class OledTouchPointerBridge : MonoBehaviour
         {
             eventDispatcher = FindFirstObjectByType<GuiEventDispatcher>();
         }
-
-        if (displayCanvas == null)
-        {
-            displayCanvas = FindFirstObjectByType<Canvas>();
-        }
-
-        if (touchSurfaceRect == null && displayCanvas != null)
-        {
-            touchSurfaceRect = displayCanvas.GetComponent<RectTransform>();
-        }
-    }
-
-    private string NormalizeText(string value)
-    {
-        if (string.IsNullOrEmpty(value))
-        {
-            return "";
-        }
-
-        return value.Trim().ToLowerInvariant().Replace("_", "").Replace("-", "");
-    }
-
-    private void LogPointer(string message)
-    {
-        if (!logPointerEvent)
-        {
-            return;
-        }
-
-        Debug.Log("[OLED Pointer] " + message);
-    }
-
-    private string GetObjectName(GameObject target)
-    {
-        if (target == null)
-        {
-            return "None";
-        }
-
-        return target.name;
-    }
-
-    private string GetHierarchyPath(GameObject target)
-    {
-        if (target == null)
-        {
-            return "None";
-        }
-
-        string path = target.name;
-        Transform current = target.transform.parent;
-
-        while (current != null)
-        {
-            path = current.name + "/" + path;
-            current = current.parent;
-        }
-
-        return path;
     }
 }
