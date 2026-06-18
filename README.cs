@@ -1,136 +1,125 @@
-using System.Globalization;
+using System;
 
-public static class GuiCommandFactory
+[Serializable]
+public class GuiEventMessageTypeEnvelope
 {
-    public const string FullModeCommand = "full_mode_cmd";
-    public const string HalfModeCommand = "half_mode_cmd";
-    public const string CloseModeCommand = "close_mode_cmd";
+    public string message_type;
+    public string type;
 
-    public const string StartLedPresetCommand = "CMD_START_LED_PRESET";
-    public const string SetLedBrightnessCommand = "CMD_SET_LED_BRIGHTNESS";
-    public const string SetLedSaturationCommand = "CMD_SET_LED_SATURATION";
-
-    public const string SetHvacVibrationCommand = "CMD_SET_HVAC_VIBRATION";
-    public const string SetHvacSoundCommand = "CMD_SET_HVAC_SOUND";
-
-    // 暫定Command。正式名が決まったらここだけ変更する。
-    public const string SetAudioOutputStateCommand = "CMD_SET_AUDIO_OUTPUT_STATE";
-
-    public static string CreateCommand(string messageType)
+    public string GetMessageType()
     {
-        return CreateCommand(messageType, "{}", GuiMessageTypeFieldName.MessageType);
-    }
-
-    public static string CreateCommand(string messageType, string payloadJson)
-    {
-        return CreateCommand(messageType, payloadJson, GuiMessageTypeFieldName.MessageType);
-    }
-
-    public static string CreateCommand(
-        string messageType,
-        GuiMessageTypeFieldName fieldName
-    )
-    {
-        return CreateCommand(messageType, "{}", fieldName);
-    }
-
-    public static string CreateCommand(
-        string messageType,
-        string payloadJson,
-        GuiMessageTypeFieldName fieldName
-    )
-    {
-        string jsonFieldName = fieldName.ToJsonFieldName();
-        return CreateCommand(messageType, payloadJson, jsonFieldName);
-    }
-
-    public static string CreateCommand(
-        string messageType,
-        string payloadJson,
-        string messageTypeFieldName
-    )
-    {
-        if (string.IsNullOrEmpty(payloadJson))
+        if (!string.IsNullOrEmpty(message_type))
         {
-            payloadJson = "{}";
+            return message_type;
         }
 
-        if (string.IsNullOrEmpty(messageTypeFieldName))
+        if (!string.IsNullOrEmpty(type))
         {
-            messageTypeFieldName = "message_type";
+            return type;
         }
 
-        return "{\""
-            + EscapeJson(messageTypeFieldName)
-            + "\":\""
-            + EscapeJson(messageType)
-            + "\",\"payload\":"
-            + payloadJson
-            + "}";
+        return "";
     }
+}
 
-    public static string CreateIndexPayload(string key, int value)
-    {
-        return "{\"" + EscapeJson(key) + "\":" + value + "}";
-    }
+[Serializable]
+public class GuiEventEmptyPayload
+{
+}
 
-    public static string CreateFloatPayload(string key, float value)
-    {
-        return "{\""
-            + EscapeJson(key)
-            + "\":"
-            + FloatToJson(value)
-            + "}";
-    }
+[Serializable]
+public class GuiEventEmptyEnvelope
+{
+    public string message_type;
+    public string type;
+    public GuiEventEmptyPayload payload;
+}
 
-    public static string CreateAudioOutputStatePayload(bool left, bool right, float volume)
-    {
-        return "{\"left\":"
-            + BoolToJson(left)
-            + ",\"right\":"
-            + BoolToJson(right)
-            + ",\"volume\":"
-            + FloatToJson(Clamp01(volume))
-            + "}";
-    }
+[Serializable]
+public class GuiEventShifterPayload
+{
+    public string gear;
+    public string shift;
+    public string value;
 
-    private static string BoolToJson(bool value)
+    public string GetGearText()
     {
-        return value ? "true" : "false";
-    }
-
-    private static string FloatToJson(float value)
-    {
-        return value.ToString("0.###", CultureInfo.InvariantCulture);
-    }
-
-    private static float Clamp01(float value)
-    {
-        if (value < 0f)
+        if (!string.IsNullOrEmpty(gear))
         {
-            return 0f;
+            return gear;
         }
 
-        if (value > 1f)
+        if (!string.IsNullOrEmpty(shift))
         {
-            return 1f;
+            return shift;
         }
 
-        return value;
-    }
+        if (!string.IsNullOrEmpty(value))
+        {
+            return value;
+        }
 
-    private static string EscapeJson(string value)
+        return "";
+    }
+}
+
+[Serializable]
+public class GuiEventShifterEnvelope
+{
+    public string message_type;
+    public string type;
+    public GuiEventShifterPayload payload;
+}
+
+[Serializable]
+public class GuiEventTouchPayload
+{
+    public string source;
+    public int x;
+    public int y;
+
+    // backend文書側の可能性: event
+    public string @event;
+
+    // 口頭I/F側の可能性: event_type
+    public string event_type;
+
+    public string GetTouchEventText()
     {
-        if (string.IsNullOrEmpty(value))
+        if (!string.IsNullOrEmpty(event_type))
         {
-            return "";
+            return event_type;
         }
 
-        return value
-            .Replace("\\", "\\\\")
-            .Replace("\"", "\\\"")
-            .Replace("\n", "\\n")
-            .Replace("\r", "\\r")
-            .Replace("\t", "\\t");
+        if (!string.IsNullOrEmpty(@event))
+        {
+            return @event;
+        }
+
+        return "";
     }
+}
+
+[Serializable]
+public class GuiEventTouchEnvelope
+{
+    public string message_type;
+    public string type;
+    public GuiEventTouchPayload payload;
+}
+
+[Serializable]
+public class GuiEventHvacPayload
+{
+    public string disp_mode;
+    public string result;
+    public string value;
+}
+
+[Serializable]
+public class GuiEventHvacEnvelope
+{
+    public string message_type;
+    public string type;
+    public GuiEventHvacPayload payload;
 }
