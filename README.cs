@@ -1,252 +1,185 @@
 using System.Collections;
 using UnityEngine;
-using UnityEngine.UI;
-using UnityEngine.Video;
 
 [DisallowMultipleComponent]
-public class DemoVideoPageView : MonoBehaviour
+public class DemoDelayedPageContentView : MonoBehaviour
 {
-    [Header("References")]
-    [SerializeField] private VideoPlayer videoPlayer;
-    [SerializeField] private RawImage targetRawImage;
+    [Header("Target")]
+    [SerializeField] private CanvasGroup targetCanvasGroup;
 
-    [Header("Playback")]
-    [SerializeField] private bool prepareOnAwake = true;
-    [SerializeField] private bool playOnEnable = true;
-    [SerializeField] private bool restartFromBeginningOnEnable = true;
-    [SerializeField] private bool loop = true;
+    [Header("Timing")]
+    [SerializeField] private float showDelaySec = 0.2f;
+    [SerializeField] private float fadeDurationSec = 0.12f;
+    [SerializeField] private bool useUnscaledTime = true;
 
-    [Header("Visibility")]
-    [SerializeField] private bool hideRawImageUntilPrepared = true;
-    [SerializeField] private bool clearRenderTextureOnDisable = true;
-    [SerializeField] private Color clearColor = Color.black;
+    [Header("Interaction")]
+    [SerializeField] private bool disableInteractionWhileHidden = true;
+
+    [Header("Disable")]
+    [SerializeField] private bool hideOnDisable = true;
 
     [Header("Debug")]
     [SerializeField] private bool logState = false;
 
-    private Coroutine playRoutine;
-    private RenderTexture targetRenderTexture;
-    private bool prepareRequested;
+    private Coroutine showRoutine;
 
     private void Awake()
     {
         ResolveReferences();
-        CacheRenderTexture();
-        SetupVideoPlayer();
-
-        if (prepareOnAwake)
-        {
-            PrepareVideo();
-        }
     }
 
     private void OnEnable()
     {
         ResolveReferences();
-        CacheRenderTexture();
-        SetupVideoPlayer();
-
-        if (hideRawImageUntilPrepared && targetRawImage != null)
-        {
-            targetRawImage.enabled = false;
-        }
-
-        if (playOnEnable)
-        {
-            StartPlayRoutine();
-        }
+        StartShowRoutine();
     }
 
     private void OnDisable()
     {
-        StopPlayRoutine();
+        StopShowRoutine();
 
-        if (videoPlayer != null)
+        if (hideOnDisable)
         {
-            // Stop() 会让 VideoPlayer 变成未准备状态。
-            // 为了下次切回来更快，使用 Pause()。
-            videoPlayer.Pause();
-        }
-
-        if (targetRawImage != null)
-        {
-            targetRawImage.enabled = false;
-        }
-
-        if (clearRenderTextureOnDisable)
-        {
-            ClearRenderTexture();
+            ApplyHiddenImmediate();
         }
     }
 
-    private void OnDestroy()
+    public void RestartShow()
     {
-        if (videoPlayer != null)
-        {
-            videoPlayer.prepareCompleted -= OnPrepareCompleted;
-            videoPlayer.errorReceived -= OnVideoErrorReceived;
-        }
+        StartShowRoutine();
     }
 
-    public void PrepareVideo()
+    public void ShowImmediate()
     {
-        if (videoPlayer == null)
+        StopShowRoutine();
+        ApplyVisibleImmediate();
+    }
+
+    public void HideImmediate()
+    {
+        StopShowRoutine();
+        ApplyHiddenImmediate();
+    }
+
+    private void StartShowRoutine()
+    {
+        StopShowRoutine();
+
+        if (targetCanvasGroup == null)
         {
             return;
         }
 
-        if (videoPlayer.isPrepared)
+        showRoutine = StartCoroutine(ShowRoutine());
+    }
+
+    private void StopShowRoutine()
+    {
+        if (showRoutine == null)
         {
             return;
         }
 
-        if (prepareRequested)
+        StopCoroutine(showRoutine);
+        showRoutine = null;
+    }
+
+    private IEnumerator ShowRoutine()
+    {
+        ApplyHiddenImmediate();
+
+        Log("Hidden. Waiting delay: " + showDelaySec);
+
+        if (showDelaySec > 0f)
         {
-            return;
+            yield return Wait(showDelaySec);
         }
 
-        prepareRequested = true;
-        videoPlayer.Prepare();
-
-        Log("Prepare requested.");
-    }
-
-    public void ReplayFromBeginning()
-    {
-        StartPlayRoutine();
-    }
-
-    private void StartPlayRoutine()
-    {
-        StopPlayRoutine();
-        playRoutine = StartCoroutine(PlayWhenReady());
-    }
-
-    private void StopPlayRoutine()
-    {
-        if (playRoutine == null)
+        if (fadeDurationSec <= 0f)
         {
-            return;
-        }
-
-        StopCoroutine(playRoutine);
-        playRoutine = null;
-    }
-
-    private IEnumerator PlayWhenReady()
-    {
-        if (videoPlayer == null)
-        {
+            ApplyVisibleImmediate();
+            showRoutine = null;
             yield break;
         }
 
-        if (!videoPlayer.isPrepared)
-        {
-            PrepareVideo();
+        float elapsed = 0f;
 
-            while (videoPlayer != null && !videoPlayer.isPrepared)
-            {
-                yield return null;
-            }
+        while (elapsed < fadeDurationSec)
+        {
+            elapsed += GetDeltaTime();
+
+            float rate = Mathf.Clamp01(elapsed / fadeDurationSec);
+            targetCanvasGroup.alpha = rate;
+
+            yield return null;
         }
 
-        if (videoPlayer == null)
-        {
-            yield break;
-        }
+        ApplyVisibleImmediate();
 
-        if (restartFromBeginningOnEnable)
-        {
-            videoPlayer.time = 0;
-            videoPlayer.frame = 0;
-        }
-
-        videoPlayer.Play();
-
-        // 等一帧，避免 RawImage 在视频纹理还没刷新时显示旧画面。
-        yield return null;
-
-        if (targetRawImage != null)
-        {
-            targetRawImage.enabled = true;
-        }
-
-        Log("Play.");
-        playRoutine = null;
+        Log("Visible.");
+        showRoutine = null;
     }
 
-    private void SetupVideoPlayer()
+    private IEnumerator Wait(float duration)
     {
-        if (videoPlayer == null)
+        float elapsed = 0f;
+
+        while (elapsed < duration)
+        {
+            elapsed += GetDeltaTime();
+            yield return null;
+        }
+    }
+
+    private float GetDeltaTime()
+    {
+        return useUnscaledTime
+            ? Time.unscaledDeltaTime
+            : Time.deltaTime;
+    }
+
+    private void ApplyHiddenImmediate()
+    {
+        if (targetCanvasGroup == null)
         {
             return;
         }
 
-        videoPlayer.playOnAwake = false;
-        videoPlayer.isLooping = loop;
+        targetCanvasGroup.alpha = 0f;
 
-        videoPlayer.prepareCompleted -= OnPrepareCompleted;
-        videoPlayer.prepareCompleted += OnPrepareCompleted;
-
-        videoPlayer.errorReceived -= OnVideoErrorReceived;
-        videoPlayer.errorReceived += OnVideoErrorReceived;
+        if (disableInteractionWhileHidden)
+        {
+            targetCanvasGroup.interactable = false;
+            targetCanvasGroup.blocksRaycasts = false;
+        }
     }
 
-    private void OnPrepareCompleted(VideoPlayer player)
+    private void ApplyVisibleImmediate()
     {
-        prepareRequested = false;
-        Log("Prepare completed.");
-    }
-
-    private void OnVideoErrorReceived(VideoPlayer player, string message)
-    {
-        prepareRequested = false;
-        Debug.LogWarning("[VideoPage] Error: " + message + " object=" + gameObject.name);
-    }
-
-    private void ClearRenderTexture()
-    {
-        CacheRenderTexture();
-
-        if (targetRenderTexture == null)
+        if (targetCanvasGroup == null)
         {
             return;
         }
 
-        RenderTexture previous = RenderTexture.active;
-        RenderTexture.active = targetRenderTexture;
+        targetCanvasGroup.alpha = 1f;
 
-        GL.Clear(true, true, clearColor);
-
-        RenderTexture.active = previous;
-    }
-
-    private void CacheRenderTexture()
-    {
-        targetRenderTexture = null;
-
-        if (videoPlayer != null && videoPlayer.targetTexture != null)
+        if (disableInteractionWhileHidden)
         {
-            targetRenderTexture = videoPlayer.targetTexture;
-            return;
-        }
-
-        if (targetRawImage != null && targetRawImage.texture is RenderTexture renderTexture)
-        {
-            targetRenderTexture = renderTexture;
+            targetCanvasGroup.interactable = true;
+            targetCanvasGroup.blocksRaycasts = true;
         }
     }
 
     private void ResolveReferences()
     {
-        if (videoPlayer == null)
+        if (targetCanvasGroup == null)
         {
-            videoPlayer = GetComponentInChildren<VideoPlayer>(true);
+            targetCanvasGroup = GetComponent<CanvasGroup>();
         }
 
-        if (targetRawImage == null)
+        if (targetCanvasGroup == null)
         {
-            targetRawImage = GetComponentInChildren<RawImage>(true);
+            targetCanvasGroup = gameObject.AddComponent<CanvasGroup>();
         }
     }
 
@@ -257,6 +190,6 @@ public class DemoVideoPageView : MonoBehaviour
             return;
         }
 
-        Debug.Log("[VideoPage] " + message + " object=" + gameObject.name);
+        Debug.Log("[DelayedPageContent] " + message + " object=" + gameObject.name);
     }
 }
