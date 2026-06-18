@@ -1,255 +1,262 @@
 using System.Collections;
 using UnityEngine;
-using PushButtonSliderLite;
-
-public enum LightingSliderCommandType
-{
-    Brightness,
-    Saturation
-}
+using UnityEngine.UI;
+using UnityEngine.Video;
 
 [DisallowMultipleComponent]
-public class LightingSliderCommandEmitter : MonoBehaviour
+public class DemoVideoPageView : MonoBehaviour
 {
-    [Header("Command Type")]
-    [SerializeField] private LightingSliderCommandType commandType = LightingSliderCommandType.Brightness;
-
     [Header("References")]
-    [SerializeField] private HorizontalSliderValue sliderValue;
-    [SerializeField] private KinemaCommandBridge commandBridge;
+    [SerializeField] private VideoPlayer videoPlayer;
+    [SerializeField] private RawImage targetRawImage;
 
-    [Header("Realtime Send Option")]
-    [SerializeField] private bool sendWhileChanging = true;
+    [Header("Playback")]
+    [SerializeField] private bool prepareOnAwake = true;
+    [SerializeField] private bool playOnEnable = true;
+    [SerializeField] private bool restartFromBeginningOnEnable = true;
+    [SerializeField] private bool loop = true;
 
-    // Backend処理負荷を抑えるため、0.05以上変化した場合のみドラッグ中Commandを送信する。
-    [SerializeField] private float minCommandValueDelta = 0.05f;
-
-    // 0なら時間間隔では制限しない。
-    // 必要であれば 0.03〜0.05 を設定する。
-    [SerializeField] private float minSendIntervalSec = 0f;
-
-    // Drag終了時に最終値を必ず送る。
-    [SerializeField] private bool sendOnDragEnded = true;
+    [Header("Visibility")]
+    [SerializeField] private bool hideRawImageUntilPrepared = true;
+    [SerializeField] private bool clearRenderTextureOnDisable = true;
+    [SerializeField] private Color clearColor = Color.black;
 
     [Header("Debug")]
-    [SerializeField] private bool logSend = true;
-    [SerializeField] private bool logSkippedValue = false;
+    [SerializeField] private bool logState = false;
 
-    private float latestValue;
-    private float lastSentValue;
-    private float lastSendTime = -999f;
-    private bool hasSentValue;
-    private Coroutine delayedSendCoroutine;
+    private Coroutine playRoutine;
+    private RenderTexture targetRenderTexture;
+    private bool prepareRequested;
 
     private void Awake()
     {
         ResolveReferences();
+        CacheRenderTexture();
+        SetupVideoPlayer();
 
-        latestValue = ReadCurrentSliderValue();
+        if (prepareOnAwake)
+        {
+            PrepareVideo();
+        }
+    }
 
-        // 既存Hardware状態との差分基準として、初期値を送信済み基準にする。
-        // これにより、ドラッグ開始直後の0.001単位の微小変化では送信しない。
-        lastSentValue = latestValue;
-        hasSentValue = true;
+    private void OnEnable()
+    {
+        ResolveReferences();
+        CacheRenderTexture();
+        SetupVideoPlayer();
+
+        if (hideRawImageUntilPrepared && targetRawImage != null)
+        {
+            targetRawImage.enabled = false;
+        }
+
+        if (playOnEnable)
+        {
+            StartPlayRoutine();
+        }
     }
 
     private void OnDisable()
     {
-        if (delayedSendCoroutine != null)
+        StopPlayRoutine();
+
+        if (videoPlayer != null)
         {
-            StopCoroutine(delayedSendCoroutine);
-            delayedSendCoroutine = null;
+            // Stop() 会让 VideoPlayer 变成未准备状态。
+            // 为了下次切回来更快，使用 Pause()。
+            videoPlayer.Pause();
+        }
+
+        if (targetRawImage != null)
+        {
+            targetRawImage.enabled = false;
+        }
+
+        if (clearRenderTextureOnDisable)
+        {
+            ClearRenderTexture();
         }
     }
 
-    /// <summary>
-    /// Slider drag中に呼ばれる。
-    /// UnityEventのfloat引数がStatic 0になる場合があるため、
-    /// 渡されたvalueは使わずHorizontalSliderValue.Valueを直接読む。
-    /// </summary>
-    public void OnSliderValueChanged(float ignoredValue)
+    private void OnDestroy()
     {
-        latestValue = ReadCurrentSliderValue();
+        if (videoPlayer != null)
+        {
+            videoPlayer.prepareCompleted -= OnPrepareCompleted;
+            videoPlayer.errorReceived -= OnVideoErrorReceived;
+        }
+    }
 
-        if (!sendWhileChanging)
+    public void PrepareVideo()
+    {
+        if (videoPlayer == null)
         {
             return;
         }
 
-        if (!CanSendRealtime(latestValue))
+        if (videoPlayer.isPrepared)
         {
-            if (logSkippedValue)
+            return;
+        }
+
+        if (prepareRequested)
+        {
+            return;
+        }
+
+        prepareRequested = true;
+        videoPlayer.Prepare();
+
+        Log("Prepare requested.");
+    }
+
+    public void ReplayFromBeginning()
+    {
+        StartPlayRoutine();
+    }
+
+    private void StartPlayRoutine()
+    {
+        StopPlayRoutine();
+        playRoutine = StartCoroutine(PlayWhenReady());
+    }
+
+    private void StopPlayRoutine()
+    {
+        if (playRoutine == null)
+        {
+            return;
+        }
+
+        StopCoroutine(playRoutine);
+        playRoutine = null;
+    }
+
+    private IEnumerator PlayWhenReady()
+    {
+        if (videoPlayer == null)
+        {
+            yield break;
+        }
+
+        if (!videoPlayer.isPrepared)
+        {
+            PrepareVideo();
+
+            while (videoPlayer != null && !videoPlayer.isPrepared)
             {
-                Debug.Log(
-                    "[Lighting Slider CMD] Skip "
-                    + gameObject.name
-                    + " type="
-                    + commandType
-                    + " value="
-                    + latestValue.ToString("0.###")
-                    + " lastSent="
-                    + lastSentValue.ToString("0.###")
-                    + " delta="
-                    + Mathf.Abs(latestValue - lastSentValue).ToString("0.###")
-                );
+                yield return null;
             }
-
-            return;
         }
 
-        SendValue(latestValue, "ValueChanged", false);
-    }
-
-    /// <summary>
-    /// Drag終了時に最終値を必ず送る。
-    /// </summary>
-    public void OnSliderDragEnded()
-    {
-        if (!sendOnDragEnded)
+        if (videoPlayer == null)
         {
-            return;
+            yield break;
         }
 
-        SendCurrentValue("DragEnded", true);
-    }
-
-    /// <summary>
-    /// +/- Button または StepController から呼ぶ。
-    /// 渡されたvalueは信用せず、次フレームでHorizontalSliderValueから再取得する。
-    /// </summary>
-    public void SendValueImmediately(float ignoredValue)
-    {
-        RequestSendCurrentValueNextFrame("StepButton");
-    }
-
-    /// <summary>
-    /// Button OnClickなど、floatを渡せない場合はこちらを使う。
-    /// </summary>
-    public void SendCurrentValueAfterStepButton()
-    {
-        RequestSendCurrentValueNextFrame("StepButton");
-    }
-
-    public void SendCurrentValue()
-    {
-        SendCurrentValue("Manual", true);
-    }
-
-    private void SendCurrentValue(string reason, bool forceSend)
-    {
-        latestValue = ReadCurrentSliderValue();
-        SendValue(latestValue, reason, forceSend);
-    }
-
-    private void RequestSendCurrentValueNextFrame(string reason)
-    {
-        if (delayedSendCoroutine != null)
+        if (restartFromBeginningOnEnable)
         {
-            StopCoroutine(delayedSendCoroutine);
+            videoPlayer.time = 0;
+            videoPlayer.frame = 0;
         }
 
-        delayedSendCoroutine = StartCoroutine(SendCurrentValueNextFrame(reason));
-    }
+        videoPlayer.Play();
 
-    private IEnumerator SendCurrentValueNextFrame(string reason)
-    {
-        // StepController / HorizontalSliderValue の更新完了を待つ。
+        // 等一帧，避免 RawImage 在视频纹理还没刷新时显示旧画面。
         yield return null;
 
-        delayedSendCoroutine = null;
-        SendCurrentValue(reason, true);
-    }
-
-    private bool CanSendRealtime(float value)
-    {
-        if (minSendIntervalSec > 0f)
+        if (targetRawImage != null)
         {
-            if (Time.unscaledTime - lastSendTime < minSendIntervalSec)
-            {
-                return false;
-            }
+            targetRawImage.enabled = true;
         }
 
-        if (!hasSentValue)
-        {
-            return true;
-        }
-
-        float effectiveDelta = Mathf.Max(0f, minCommandValueDelta);
-        float currentDelta = Mathf.Abs(value - lastSentValue);
-
-        return currentDelta >= effectiveDelta;
+        Log("Play.");
+        playRoutine = null;
     }
 
-    private void SendValue(float value, string reason, bool forceSend)
+    private void SetupVideoPlayer()
     {
-        ResolveReferences();
-
-        value = Mathf.Clamp01(value);
-
-        if (!forceSend && !CanSendRealtime(value))
+        if (videoPlayer == null)
         {
             return;
         }
 
-        if (commandBridge == null)
-        {
-            Debug.LogWarning("[Lighting Slider CMD] CommandBridge is not assigned. object=" + gameObject.name);
-            return;
-        }
+        videoPlayer.playOnAwake = false;
+        videoPlayer.isLooping = loop;
 
-        lastSendTime = Time.unscaledTime;
-        lastSentValue = value;
-        hasSentValue = true;
+        videoPlayer.prepareCompleted -= OnPrepareCompleted;
+        videoPlayer.prepareCompleted += OnPrepareCompleted;
 
-        if (logSend)
-        {
-            Debug.Log(
-                "[Lighting Slider CMD] object="
-                + gameObject.name
-                + " type="
-                + commandType
-                + " value="
-                + value.ToString("0.###")
-                + " reason="
-                + reason
-                + " threshold="
-                + minCommandValueDelta.ToString("0.###")
-            );
-        }
-
-        if (commandType == LightingSliderCommandType.Brightness)
-        {
-            commandBridge.SendLightingBrightnessCommand(value);
-            return;
-        }
-
-        commandBridge.SendLightingSaturationCommand(value);
+        videoPlayer.errorReceived -= OnVideoErrorReceived;
+        videoPlayer.errorReceived += OnVideoErrorReceived;
     }
 
-    private float ReadCurrentSliderValue()
+    private void OnPrepareCompleted(VideoPlayer player)
     {
-        ResolveReferences();
+        prepareRequested = false;
+        Log("Prepare completed.");
+    }
 
-        if (sliderValue == null)
+    private void OnVideoErrorReceived(VideoPlayer player, string message)
+    {
+        prepareRequested = false;
+        Debug.LogWarning("[VideoPage] Error: " + message + " object=" + gameObject.name);
+    }
+
+    private void ClearRenderTexture()
+    {
+        CacheRenderTexture();
+
+        if (targetRenderTexture == null)
         {
-            Debug.LogWarning("[Lighting Slider CMD] SliderValue is not assigned. object=" + gameObject.name);
-            return latestValue;
+            return;
         }
 
-        return Mathf.Clamp01(sliderValue.Value);
+        RenderTexture previous = RenderTexture.active;
+        RenderTexture.active = targetRenderTexture;
+
+        GL.Clear(true, true, clearColor);
+
+        RenderTexture.active = previous;
+    }
+
+    private void CacheRenderTexture()
+    {
+        targetRenderTexture = null;
+
+        if (videoPlayer != null && videoPlayer.targetTexture != null)
+        {
+            targetRenderTexture = videoPlayer.targetTexture;
+            return;
+        }
+
+        if (targetRawImage != null && targetRawImage.texture is RenderTexture renderTexture)
+        {
+            targetRenderTexture = renderTexture;
+        }
     }
 
     private void ResolveReferences()
     {
-        if (sliderValue == null)
+        if (videoPlayer == null)
         {
-            sliderValue = GetComponent<HorizontalSliderValue>();
+            videoPlayer = GetComponentInChildren<VideoPlayer>(true);
         }
 
-        if (commandBridge == null)
+        if (targetRawImage == null)
         {
-            commandBridge = FindFirstObjectByType<KinemaCommandBridge>();
+            targetRawImage = GetComponentInChildren<RawImage>(true);
         }
+    }
+
+    private void Log(string message)
+    {
+        if (!logState)
+        {
+            return;
+        }
+
+        Debug.Log("[VideoPage] " + message + " object=" + gameObject.name);
     }
 }
