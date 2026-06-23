@@ -1,73 +1,174 @@
-using UnityEngine;
+using System.Globalization;
 
-[ExecuteAlways]
-[DisallowMultipleComponent]
-public class DemoViewportTopAligner : MonoBehaviour
+public static class GuiCommandFactory
 {
-    [SerializeField] private RectTransform viewportRect;
-    [SerializeField] private float viewportWidth = 5300f;
+    public const string FullModeCommand = "full_mode_cmd";
+    public const string HalfModeCommand = "half_mode_cmd";
+    public const string CloseModeCommand = "close_mode_cmd";
 
-    [Header("Apply")]
-    [SerializeField] private bool applyOnEnable = true;
-    [SerializeField] private bool applyEveryLateUpdate = true;
+    public const string StartLedPresetCommand = "CMD_LED_MAIN_START_PRESET";
+    public const string SetLedBrightnessCommand = "CMD_LED_MAIN_SET_BRIGHTNESS";
+    public const string SetLedSaturationCommand = "CMD_LED_MAIN_SET_SATURATION";
 
-    private void Awake()
+    public const string SetHvacVibrationCommand = "CMD_HVAC_SET_VIBRATION";
+    public const string SetHvacSoundCommand = "CMD_AUDIO_SET_HVAC_SOUND";
+
+    public const string SetAudioOutputStateCommand = "CMD_SET_AUDIO_OUTPUT_STATE";
+
+    public static string CreateCommand(string messageType)
     {
-        ResolveReferences();
-
-        if (applyOnEnable)
-        {
-            ApplyTopAlignment();
-        }
+        return CreateCommand(messageType, "{}", GuiMessageTypeFieldName.Type);
     }
 
-    private void OnEnable()
+    public static string CreateCommand(string messageType, string payloadJson)
     {
-        ResolveReferences();
-
-        if (applyOnEnable)
-        {
-            ApplyTopAlignment();
-        }
+        return CreateCommand(messageType, payloadJson, GuiMessageTypeFieldName.Type);
     }
 
-    private void LateUpdate()
+    public static string CreateCommand(
+        string messageType,
+        GuiMessageTypeFieldName fieldName
+    )
     {
-        if (!applyEveryLateUpdate)
-        {
-            return;
-        }
-
-        ApplyTopAlignment();
+        return CreateCommand(messageType, "{}", fieldName);
     }
 
-    [ContextMenu("Apply Top Alignment")]
-    public void ApplyTopAlignment()
+    public static string CreateCommand(
+        string messageType,
+        string payloadJson,
+        GuiMessageTypeFieldName fieldName
+    )
     {
-        ResolveReferences();
-
-        if (viewportRect == null)
-        {
-            return;
-        }
-
-        float currentHeight = viewportRect.rect.height;
-
-        viewportRect.anchorMin = new Vector2(0.5f, 1f);
-        viewportRect.anchorMax = new Vector2(0.5f, 1f);
-        viewportRect.pivot = new Vector2(0.5f, 1f);
-
-        viewportRect.anchoredPosition = Vector2.zero;
-
-        viewportRect.SetSizeWithCurrentAnchors(RectTransform.Axis.Horizontal, viewportWidth);
-        viewportRect.SetSizeWithCurrentAnchors(RectTransform.Axis.Vertical, currentHeight);
+        string jsonFieldName = fieldName.ToJsonFieldName();
+        return CreateCommand(messageType, payloadJson, jsonFieldName);
     }
 
-    private void ResolveReferences()
+    public static string CreateCommand(
+        string messageType,
+        string payloadJson,
+        string messageTypeFieldName
+    )
     {
-        if (viewportRect == null)
+        if (string.IsNullOrEmpty(payloadJson))
         {
-            viewportRect = GetComponent<RectTransform>();
+            payloadJson = "{}";
         }
+
+        if (string.IsNullOrEmpty(messageTypeFieldName))
+        {
+            messageTypeFieldName = "type";
+        }
+
+        return "{\""
+            + EscapeJson(messageTypeFieldName)
+            + "\":\""
+            + EscapeJson(messageType)
+            + "\",\"payload\":"
+            + payloadJson
+            + "}";
+    }
+
+    public static string CreateIndexPayload(string key, int value)
+    {
+        return "{\"" + EscapeJson(key) + "\":" + value + "}";
+    }
+
+    public static string CreateFloatPayload(string key, float value)
+    {
+        return "{\""
+            + EscapeJson(key)
+            + "\":"
+            + FloatToJson(value)
+            + "}";
+    }
+
+    public static string CreateHvacVibrationPayload(int vibration, int defaultVolume)
+    {
+        int safeVibration = ClampByte(vibration);
+        int safeVolume = ClampByte(defaultVolume);
+
+        return "{\"vibration\":"
+            + safeVibration
+            + ",\"default_volume\":"
+            + safeVolume
+            + "}";
+    }
+
+    public static string CreateHvacSoundPayload(int sound, int defaultVolume)
+    {
+        int safeSound = ClampByte(sound);
+        int safeVolume = ClampByte(defaultVolume);
+
+        return "{\"sound\":"
+            + safeSound
+            + ",\"default_volume\":"
+            + safeVolume
+            + "}";
+    }
+
+    public static string CreateAudioOutputStatePayload(bool left, bool right, float volume)
+    {
+        return "{\"left\":"
+            + BoolToJson(left)
+            + ",\"right\":"
+            + BoolToJson(right)
+            + ",\"volume\":"
+            + FloatToJson(Clamp01(volume))
+            + "}";
+    }
+
+    private static int ClampByte(int value)
+    {
+        if (value < 0)
+        {
+            return 0;
+        }
+
+        if (value > 255)
+        {
+            return 255;
+        }
+
+        return value;
+    }
+
+    private static string BoolToJson(bool value)
+    {
+        return value ? "true" : "false";
+    }
+
+    private static string FloatToJson(float value)
+    {
+        return value.ToString("0.###", CultureInfo.InvariantCulture);
+    }
+
+    private static float Clamp01(float value)
+    {
+        if (value < 0f)
+        {
+            return 0f;
+        }
+
+        if (value > 1f)
+        {
+            return 1f;
+        }
+
+        return value;
+    }
+
+    private static string EscapeJson(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return "";
+        }
+
+        return value
+            .Replace("\\", "\\\\")
+            .Replace("\"", "\\\"")
+            .Replace("\n", "\\n")
+            .Replace("\r", "\\r")
+            .Replace("\t", "\\t");
     }
 }
