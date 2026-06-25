@@ -1,306 +1,183 @@
-using System.Collections;
-using UnityEngine;
-using UnityEngine.UI;
-using UnityEngine.Video;
+using System.Globalization;
 
-[DisallowMultipleComponent]
-public class DemoDecorativeLoopVideoView : MonoBehaviour
+public static class GuiCommandFactory
 {
-    [Header("References")]
-    [SerializeField] private VideoPlayer videoPlayer;
-    [SerializeField] private RawImage targetRawImage;
+    public const string FullModeCommand = "full_mode_cmd";
+    public const string HalfModeCommand = "half_mode_cmd";
+    public const string CloseModeCommand = "close_mode_cmd";
 
-    [Header("Playback")]
-    [SerializeField] private bool playOnEnable = true;
-    [SerializeField] private bool restartFromBeginningOnEnable = true;
-    [SerializeField] private bool loop = true;
+    public const string LedMainPowerOnCommand = "SIG_LED_MAIN_POWER_ON";
+    public const string LedSubPowerOnCommand = "SIG_LED_SUB_POWER_ON";
+    public const string LedMainPowerOffCommand = "SIG_LED_MAIN_POWER_OFF";
+    public const string LedSubPowerOffCommand = "SIG_LED_SUB_POWER_OFF";
 
-    [Header("Prepare")]
-    [SerializeField] private bool prepareOnAwake = true;
-    [SerializeField] private bool waitPrepareOnEnable = true;
-    [SerializeField] private float maxPrepareWaitSec = 0.5f;
+    public const string ShifterStartCommand = "CMD_SHIFTER_START";
+    public const string ShifterStopCommand = "CMD_SHIFTER_STOP";
 
-    [Header("First Frame")]
-    [SerializeField] private bool hideRawImageBeforePlay = true;
-    [SerializeField] private float showRawImageDelaySec = 0.05f;
+    public const string StartLedPresetCommand = "CMD_LED_MAIN_START_PRESET";
+    public const string SetLedBrightnessCommand = "CMD_LED_MAIN_SET_BRIGHTNESS";
+    public const string SetLedSaturationCommand = "CMD_LED_MAIN_SET_SATURATION";
 
-    [Header("Disable")]
-    [SerializeField] private bool pauseOnDisable = true;
-    [SerializeField] private bool hideRawImageOnDisable = true;
-    [SerializeField] private bool clearRenderTextureOnDisable = false;
-    [SerializeField] private Color clearColor = Color.black;
+    public const string SetHvacVibrationCommand = "CMD_HVAC_SET_VIBRATION";
+    public const string SetHvacSoundCommand = "CMD_AUDIO_SET_HVAC_SOUND";
 
-    [Header("Debug")]
-    [SerializeField] private bool logState = false;
+    // 暫定Command。Backend正式仕様が決まったらここだけ変更する。
+    public const string SetAudioOutputStateCommand = "CMD_SET_AUDIO_OUTPUT_STATE";
 
-    private Coroutine playRoutine;
-    private bool prepareRequested;
-    private RenderTexture cachedRenderTexture;
-
-    private void Awake()
+    public static string CreateCommand(string messageType)
     {
-        ResolveReferences();
-        SetupVideoPlayer();
-        CacheRenderTexture();
-
-        if (prepareOnAwake)
-        {
-            PrepareVideo();
-        }
+        return CreateCommand(messageType, "{}", GuiMessageTypeFieldName.Type);
     }
 
-    private void OnEnable()
+    public static string CreateCommand(string messageType, string payloadJson)
     {
-        ResolveReferences();
-        SetupVideoPlayer();
-        CacheRenderTexture();
-
-        if (hideRawImageBeforePlay && targetRawImage != null)
-        {
-            targetRawImage.enabled = false;
-        }
-
-        if (playOnEnable)
-        {
-            StartPlayRoutine();
-        }
+        return CreateCommand(messageType, payloadJson, GuiMessageTypeFieldName.Type);
     }
 
-    private void OnDisable()
+    public static string CreateCommand(
+        string messageType,
+        GuiMessageTypeFieldName fieldName
+    )
     {
-        StopPlayRoutine();
-
-        if (videoPlayer != null && pauseOnDisable)
-        {
-            videoPlayer.Pause();
-        }
-
-        if (targetRawImage != null && hideRawImageOnDisable)
-        {
-            targetRawImage.enabled = false;
-        }
-
-        if (clearRenderTextureOnDisable)
-        {
-            ClearRenderTexture();
-        }
+        return CreateCommand(messageType, "{}", fieldName);
     }
 
-    private void OnDestroy()
+    public static string CreateCommand(
+        string messageType,
+        string payloadJson,
+        GuiMessageTypeFieldName fieldName
+    )
     {
-        if (videoPlayer != null)
-        {
-            videoPlayer.prepareCompleted -= OnPrepareCompleted;
-            videoPlayer.errorReceived -= OnVideoErrorReceived;
-        }
+        string jsonFieldName = fieldName.ToJsonFieldName();
+        return CreateCommand(messageType, payloadJson, jsonFieldName);
     }
 
-    public void PrepareVideo()
+    public static string CreateCommand(
+        string messageType,
+        string payloadJson,
+        string messageTypeFieldName
+    )
     {
-        if (videoPlayer == null)
+        if (string.IsNullOrEmpty(payloadJson))
         {
-            return;
+            payloadJson = "{}";
         }
 
-        if (videoPlayer.isPrepared)
+        if (string.IsNullOrEmpty(messageTypeFieldName))
         {
-            return;
+            messageTypeFieldName = "type";
         }
 
-        if (prepareRequested)
-        {
-            return;
-        }
-
-        prepareRequested = true;
-        videoPlayer.Prepare();
-
-        Log("Prepare requested.");
+        return "{\""
+            + EscapeJson(messageTypeFieldName)
+            + "\":\""
+            + EscapeJson(messageType)
+            + "\",\"payload\":"
+            + payloadJson
+            + "}";
     }
 
-    public void RestartVideo()
+    public static string CreateIndexPayload(string key, int value)
     {
-        StartPlayRoutine();
+        return "{\"" + EscapeJson(key) + "\":" + value + "}";
     }
 
-    private void StartPlayRoutine()
+    public static string CreateFloatPayload(string key, float value)
     {
-        StopPlayRoutine();
-        playRoutine = StartCoroutine(PlayRoutine());
+        return "{\""
+            + EscapeJson(key)
+            + "\":"
+            + FloatToJson(value)
+            + "}";
     }
 
-    private void StopPlayRoutine()
+    public static string CreateHvacVibrationPayload(int vibration, int defaultVolume)
     {
-        if (playRoutine == null)
-        {
-            return;
-        }
+        int safeVibration = ClampByte(vibration);
+        int safeVolume = ClampByte(defaultVolume);
 
-        StopCoroutine(playRoutine);
-        playRoutine = null;
+        return "{\"vibration\":"
+            + safeVibration
+            + ",\"default_volume\":"
+            + safeVolume
+            + "}";
     }
 
-    private IEnumerator PlayRoutine()
+    public static string CreateHvacSoundPayload(int sound, int defaultVolume)
     {
-        if (videoPlayer == null)
-        {
-            yield break;
-        }
+        int safeSound = ClampByte(sound);
+        int safeVolume = ClampByte(defaultVolume);
 
-        if (waitPrepareOnEnable && !videoPlayer.isPrepared)
-        {
-            PrepareVideo();
-
-            float waitStart = Time.unscaledTime;
-
-            while (videoPlayer != null && !videoPlayer.isPrepared)
-            {
-                if (Time.unscaledTime - waitStart >= maxPrepareWaitSec)
-                {
-                    Log("Prepare timeout. Start play anyway.");
-                    break;
-                }
-
-                yield return null;
-            }
-        }
-
-        if (videoPlayer == null)
-        {
-            yield break;
-        }
-
-        if (restartFromBeginningOnEnable)
-        {
-            TrySetVideoToFirstFrame();
-        }
-
-        videoPlayer.Play();
-
-        if (showRawImageDelaySec > 0f)
-        {
-            float elapsed = 0f;
-
-            while (elapsed < showRawImageDelaySec)
-            {
-                elapsed += Time.unscaledDeltaTime;
-                yield return null;
-            }
-        }
-        else
-        {
-            yield return null;
-        }
-
-        if (targetRawImage != null)
-        {
-            targetRawImage.enabled = true;
-        }
-
-        Log("Play.");
-        playRoutine = null;
+        return "{\"sound\":"
+            + safeSound
+            + ",\"default_volume\":"
+            + safeVolume
+            + "}";
     }
 
-    private void TrySetVideoToFirstFrame()
+    public static string CreateAudioOutputStatePayload(bool left, bool right, float volume)
     {
-        if (videoPlayer == null)
-        {
-            return;
-        }
-
-        try
-        {
-            videoPlayer.time = 0;
-            videoPlayer.frame = 0;
-        }
-        catch
-        {
-            // 一部Video sourceではframe設定が失敗する場合があるため無視する。
-        }
+        return "{\"left\":"
+            + BoolToJson(left)
+            + ",\"right\":"
+            + BoolToJson(right)
+            + ",\"volume\":"
+            + FloatToJson(Clamp01(volume))
+            + "}";
     }
 
-    private void SetupVideoPlayer()
+    private static int ClampByte(int value)
     {
-        if (videoPlayer == null)
+        if (value < 0)
         {
-            return;
+            return 0;
         }
 
-        videoPlayer.playOnAwake = false;
-        videoPlayer.isLooping = loop;
+        if (value > 255)
+        {
+            return 255;
+        }
 
-        videoPlayer.prepareCompleted -= OnPrepareCompleted;
-        videoPlayer.prepareCompleted += OnPrepareCompleted;
-
-        videoPlayer.errorReceived -= OnVideoErrorReceived;
-        videoPlayer.errorReceived += OnVideoErrorReceived;
+        return value;
     }
 
-    private void OnPrepareCompleted(VideoPlayer player)
+    private static string BoolToJson(bool value)
     {
-        prepareRequested = false;
-        Log("Prepare completed.");
+        return value ? "true" : "false";
     }
 
-    private void OnVideoErrorReceived(VideoPlayer player, string message)
+    private static string FloatToJson(float value)
     {
-        prepareRequested = false;
-        Debug.LogWarning("[DecorativeLoopVideo] Error: " + message + " object=" + gameObject.name);
+        return value.ToString("0.###", CultureInfo.InvariantCulture);
     }
 
-    private void ClearRenderTexture()
+    private static float Clamp01(float value)
     {
-        CacheRenderTexture();
-
-        if (cachedRenderTexture == null)
+        if (value < 0f)
         {
-            return;
+            return 0f;
         }
 
-        RenderTexture previous = RenderTexture.active;
-        RenderTexture.active = cachedRenderTexture;
+        if (value > 1f)
+        {
+            return 1f;
+        }
 
-        GL.Clear(true, true, clearColor);
-
-        RenderTexture.active = previous;
+        return value;
     }
 
-    private void CacheRenderTexture()
+    private static string EscapeJson(string value)
     {
-        cachedRenderTexture = null;
-
-        if (videoPlayer != null && videoPlayer.targetTexture != null)
+        if (string.IsNullOrEmpty(value))
         {
-            cachedRenderTexture = videoPlayer.targetTexture;
-            return;
+            return "";
         }
 
-        if (targetRawImage != null && targetRawImage.texture is RenderTexture renderTexture)
-        {
-            cachedRenderTexture = renderTexture;
-        }
-    }
-
-    private void ResolveReferences()
-    {
-        if (videoPlayer == null)
-        {
-            videoPlayer = GetComponentInChildren<VideoPlayer>(true);
-        }
-
-        if (targetRawImage == null)
-        {
-            targetRawImage = GetComponentInChildren<RawImage>(true);
-        }
-    }
-
-    private void Log(string message)
-    {
-        if (!logState)
-        {
-            return;
-        }
-
-        Debug.Log("[DecorativeLoopVideo] " + message + " object=" + gameObject.name);
+        return value
+            .Replace("\\", "\\\\")
+            .Replace("\"", "\\\"")
+            .Replace("\n", "\\n")
+            .Replace("\r", "\\r")
+            .Replace("\t", "\\t");
     }
 }
