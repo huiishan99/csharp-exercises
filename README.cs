@@ -1,188 +1,585 @@
+using System.Collections;
 using UnityEngine;
 
-public class KinemaCommandBridge : MonoBehaviour
+public enum KinemaMockDisplayMode
 {
-    [SerializeField] private GuiCommandTcpClientSender commandSender;
+    Close,
+    Opening,
+    Full,
+    Half,
+    RearView
+}
 
-    [Header("Audio Command")]
-    [SerializeField] private bool sendAudioOutputCommand = true;
-    [SerializeField] private string audioOutputCommandName = GuiCommandFactory.SetAudioOutputStateCommand;
+public class KinemaMockDisplayController : MonoBehaviour
+{
+    private enum KinemaMechaState
+    {
+        Unknown,
+        Close,
+        Half,
+        Full,
+        Other
+    }
 
-    [Header("Default HVAC")]
-    [SerializeField] private int defaultHvacVolume = 128;
+    private enum PendingMechaAction
+    {
+        None,
+        WaitHalfForOpening,
+        WaitFullAfterWelcome,
+        WaitFullForParking,
+        WaitHalfForDrive,
+        WaitHalfForRear,
+        WaitClose
+    }
+
+    [Header("Root")]
+    [SerializeField] private GameObject screenViewportRoot;
+    [SerializeField] private GameObject sourcePanelObject;
+
+    [Header("Managers")]
+    [SerializeField] private DemoScreenViewport screenViewport;
+    [SerializeField] private DemoPageSwitcher pageSwitcher;
+    [SerializeField] private DemoSourcePanel sourcePanel;
+    [SerializeField] private KinemaMockPopupController popupController;
+
+    [Header("Command")]
+    [SerializeField] private KinemaCommandBridge commandBridge;
+    [SerializeField] private bool sendMechaCommand = true;
+
+    [Header("Page")]
+    [SerializeField] private DemoPageId openingPage = DemoPageId.Welcome;
+    [SerializeField] private DemoPageId drivePage = DemoPageId.NormalDrive;
+    [SerializeField] private DemoPageId rearPage = DemoPageId.RearView;
+
+    [Header("Parking")]
+    [SerializeField] private DemoSourceId parkingDefaultSource = DemoSourceId.Setting;
+
+    [Header("Opening")]
+    [SerializeField] private float openingDuration = 3.5f;
+
+    [Header("Debug")]
+    [SerializeField] private bool logState = true;
+
+    public KinemaMockDisplayMode CurrentDisplayMode { get; private set; }
+    public bool IsIgnOn { get; private set; }
+
+    private KinemaMechaState currentMechaState = KinemaMechaState.Close;
+    private PendingMechaAction pendingMechaAction = PendingMechaAction.None;
+    private Coroutine openingCoroutine;
 
     private void Awake()
     {
         ResolveReferences();
     }
 
-    public void SendFullModeCommand()
+    private void Start()
     {
-        SendCommand(GuiCommandFactory.FullModeCommand);
+        currentMechaState = KinemaMechaState.Close;
+        pendingMechaAction = PendingMechaAction.None;
+        ApplyCloseView();
     }
 
-    public void SendHalfModeCommand()
+    public void ToggleIgn()
     {
-        SendCommand(GuiCommandFactory.HalfModeCommand);
+        if (IsIgnOn)
+        {
+            IgnOff();
+            return;
+        }
+
+        IgnOn();
     }
 
-    public void SendCloseModeCommand()
+    /// <summary>
+    /// IGN ON入力。
+    /// half_mode_cmdを送信し、同時にLED Power ON / Shifter Startを送信する。
+    /// 画面表示はhalf_mode_sts受信後に行う。
+    /// </summary>
+    public void IgnOn()
     {
-        SendCommand(GuiCommandFactory.CloseModeCommand);
-    }
-
-    public void SendLedMainPowerOnCommand()
-    {
-        SendCommand(GuiCommandFactory.LedMainPowerOnCommand);
-    }
-
-    public void SendLedSubPowerOnCommand()
-    {
-        SendCommand(GuiCommandFactory.LedSubPowerOnCommand);
-    }
-
-    public void SendLedMainPowerOffCommand()
-    {
-        SendCommand(GuiCommandFactory.LedMainPowerOffCommand);
-    }
-
-    public void SendLedSubPowerOffCommand()
-    {
-        SendCommand(GuiCommandFactory.LedSubPowerOffCommand);
-    }
-
-    public void SendShifterStartCommand()
-    {
-        SendCommand(GuiCommandFactory.ShifterStartCommand);
-    }
-
-    public void SendShifterStopCommand()
-    {
-        SendCommand(GuiCommandFactory.ShifterStopCommand);
-    }
-
-    public void SendSystemStartRelatedCommands()
-    {
-        SendLedMainPowerOnCommand();
-        SendLedSubPowerOnCommand();
-        SendShifterStartCommand();
-    }
-
-    public void SendSystemStopRelatedCommands()
-    {
-        SendLedMainPowerOffCommand();
-        SendLedSubPowerOffCommand();
-        SendShifterStopCommand();
-    }
-
-    public void SendLightingPresetCommand(int index)
-    {
-        string payload = GuiCommandFactory.CreateIndexPayload("index", index);
-        SendCommand(GuiCommandFactory.StartLedPresetCommand, payload);
-    }
-
-    public void SendLightingBrightnessCommand(float brightness)
-    {
-        string payload = GuiCommandFactory.CreateFloatPayload(
-            "brightness",
-            Mathf.Clamp01(brightness)
-        );
-
-        SendCommand(GuiCommandFactory.SetLedBrightnessCommand, payload);
-    }
-
-    public void SendLightingSaturationCommand(float saturation)
-    {
-        string payload = GuiCommandFactory.CreateFloatPayload(
-            "saturation",
-            Mathf.Clamp01(saturation)
-        );
-
-        SendCommand(GuiCommandFactory.SetLedSaturationCommand, payload);
-    }
-
-    public void SendHvacVibrationCommand(int vibration)
-    {
-        SendHvacVibrationCommand(vibration, defaultHvacVolume);
-    }
-
-    public void SendHvacVibrationCommand(int vibration, int defaultVolume)
-    {
-        string payload = GuiCommandFactory.CreateHvacVibrationPayload(
-            vibration,
-            defaultVolume
-        );
-
-        SendCommand(GuiCommandFactory.SetHvacVibrationCommand, payload);
-    }
-
-    public void SendHvacSoundCommand(int sound)
-    {
-        SendHvacSoundCommand(sound, defaultHvacVolume);
-    }
-
-    public void SendHvacSoundCommand(int sound, int defaultVolume)
-    {
-        string payload = GuiCommandFactory.CreateHvacSoundPayload(
-            sound,
-            defaultVolume
-        );
-
-        SendCommand(GuiCommandFactory.SetHvacSoundCommand, payload);
-    }
-
-    public void SendAudioOutputStateCommand(bool leftOn, bool rightOn, float volume)
-    {
-        if (!sendAudioOutputCommand)
+        if (IsIgnOn)
         {
             return;
         }
 
-        string payload = GuiCommandFactory.CreateAudioOutputStatePayload(
-            leftOn,
-            rightOn,
-            Mathf.Clamp01(volume)
-        );
+        IsIgnOn = true;
+        HidePopup();
+        StopOpeningCoroutine();
 
-        SendCommand(audioOutputCommandName, payload);
-    }
-
-    private void SendCommand(string messageType)
-    {
-        ResolveReferences();
-
-        if (commandSender == null)
+        if (currentMechaState == KinemaMechaState.Half)
         {
-            Debug.LogWarning("[GUI CMD] Command sender is not assigned. type=" + messageType);
+            SendSystemStartRelatedCommands();
+            ApplyOpeningViewAndStartTimer();
             return;
         }
 
-        commandSender.SendCommand(messageType);
+        pendingMechaAction = PendingMechaAction.WaitHalfForOpening;
+        LogState("IG_ON requested. Waiting half_mode_sts.");
+
+        SendHalfModeCommand();
+        SendSystemStartRelatedCommands();
     }
 
-    private void SendCommand(string messageType, string payloadJson)
+    /// <summary>
+    /// IGN OFF入力。
+    /// close_mode_cmdを送信し、同時にLED Power OFF / Shifter Stopを送信する。
+    /// blackoutはclose_mode_sts受信後に行う。
+    /// </summary>
+    public void IgnOff()
     {
-        ResolveReferences();
-
-        if (commandSender == null)
+        if (!IsIgnOn && CurrentDisplayMode == KinemaMockDisplayMode.Close)
         {
-            Debug.LogWarning("[GUI CMD] Command sender is not assigned. type=" + messageType);
             return;
         }
 
-        commandSender.SendCommand(messageType, payloadJson);
+        IsIgnOn = false;
+        StopOpeningCoroutine();
+        HidePopup();
+
+        if (currentMechaState == KinemaMechaState.Close)
+        {
+            pendingMechaAction = PendingMechaAction.None;
+            SendSystemStopRelatedCommands();
+            ApplyCloseView();
+            return;
+        }
+
+        pendingMechaAction = PendingMechaAction.WaitClose;
+        LogState("IG_OFF requested. Waiting close_mode_sts.");
+
+        SendCloseModeCommand();
+        SendSystemStopRelatedCommands();
+    }
+
+    public void ShiftP()
+    {
+        if (!CanAcceptShiftInput())
+        {
+            return;
+        }
+
+        RequestFullForParking();
+    }
+
+    public void ShiftD()
+    {
+        if (!CanAcceptShiftInput())
+        {
+            return;
+        }
+
+        RequestHalfForDrive();
+    }
+
+    public void ShiftR()
+    {
+        if (!CanAcceptShiftInput())
+        {
+            return;
+        }
+
+        RequestHalfForRear();
+    }
+
+    public void ToggleAutoPopup()
+    {
+        if (!IsIgnOn)
+        {
+            return;
+        }
+
+        if (CurrentDisplayMode != KinemaMockDisplayMode.Full)
+        {
+            HidePopup();
+            return;
+        }
+
+        if (popupController != null)
+        {
+            popupController.TogglePopup();
+        }
+    }
+
+    public void OnMechaHalfModeStatus()
+    {
+        currentMechaState = KinemaMechaState.Half;
+        LogState("Received half_mode_sts. Pending=" + pendingMechaAction);
+
+        switch (pendingMechaAction)
+        {
+            case PendingMechaAction.WaitHalfForOpening:
+                pendingMechaAction = PendingMechaAction.None;
+                ApplyOpeningViewAndStartTimer();
+                break;
+
+            case PendingMechaAction.WaitHalfForDrive:
+                pendingMechaAction = PendingMechaAction.None;
+                ApplyHalfDriveView();
+                break;
+
+            case PendingMechaAction.WaitHalfForRear:
+                pendingMechaAction = PendingMechaAction.None;
+                ApplyRearView();
+                break;
+
+            default:
+                LogState("half_mode_sts received without matching pending action.");
+                break;
+        }
+    }
+
+    public void OnMechaFullModeStatus()
+    {
+        currentMechaState = KinemaMechaState.Full;
+        LogState("Received full_mode_sts. Pending=" + pendingMechaAction);
+
+        switch (pendingMechaAction)
+        {
+            case PendingMechaAction.WaitFullAfterWelcome:
+            case PendingMechaAction.WaitFullForParking:
+                pendingMechaAction = PendingMechaAction.None;
+                ApplyFullView();
+                break;
+
+            default:
+                LogState("full_mode_sts received without matching pending action.");
+                break;
+        }
+    }
+
+    public void OnMechaCloseModeStatus()
+    {
+        currentMechaState = KinemaMechaState.Close;
+        LogState("Received close_mode_sts. Pending=" + pendingMechaAction);
+
+        pendingMechaAction = PendingMechaAction.None;
+        IsIgnOn = false;
+        StopOpeningCoroutine();
+        ApplyCloseView();
+    }
+
+    public void OnMechaOtherModeStatus()
+    {
+        currentMechaState = KinemaMechaState.Other;
+        pendingMechaAction = PendingMechaAction.None;
+        StopOpeningCoroutine();
+        Debug.LogWarning("[KinemaDisplay] Received other_mode_sts. Pending action has been cleared.");
+    }
+
+    private bool CanAcceptShiftInput()
+    {
+        if (!IsIgnOn)
+        {
+            return false;
+        }
+
+        if (pendingMechaAction != PendingMechaAction.None)
+        {
+            LogState("Shift ignored because pending action exists: " + pendingMechaAction);
+            return false;
+        }
+
+        if (CurrentDisplayMode == KinemaMockDisplayMode.Opening)
+        {
+            LogState("Shift ignored during Opening.");
+            return false;
+        }
+
+        return true;
+    }
+
+    private void RequestFullForParking()
+    {
+        HidePopup();
+
+        if (currentMechaState == KinemaMechaState.Full)
+        {
+            ApplyFullView();
+            return;
+        }
+
+        pendingMechaAction = PendingMechaAction.WaitFullForParking;
+        LogState("Full requested. Waiting full_mode_sts.");
+        SendFullModeCommand();
+    }
+
+    private void RequestHalfForDrive()
+    {
+        HidePopup();
+
+        if (currentMechaState == KinemaMechaState.Half)
+        {
+            ApplyHalfDriveView();
+            return;
+        }
+
+        pendingMechaAction = PendingMechaAction.WaitHalfForDrive;
+        LogState("Half for Drive requested. Waiting half_mode_sts.");
+        SendHalfModeCommand();
+    }
+
+    private void RequestHalfForRear()
+    {
+        HidePopup();
+
+        if (currentMechaState == KinemaMechaState.Half)
+        {
+            ApplyRearView();
+            return;
+        }
+
+        pendingMechaAction = PendingMechaAction.WaitHalfForRear;
+        LogState("Half for Rear requested. Waiting half_mode_sts.");
+        SendHalfModeCommand();
+    }
+
+    private void ApplyCloseView()
+    {
+        CurrentDisplayMode = KinemaMockDisplayMode.Close;
+
+        HidePopup();
+
+        if (sourcePanel != null)
+        {
+            sourcePanel.ResetFullSource(parkingDefaultSource);
+        }
+
+        SetActive(screenViewportRoot, false);
+        SetActive(sourcePanelObject, false);
+
+        LogState("ApplyCloseView");
+    }
+
+    private void ApplyOpeningViewAndStartTimer()
+    {
+        StopOpeningCoroutine();
+
+        CurrentDisplayMode = KinemaMockDisplayMode.Opening;
+
+        HidePopup();
+
+        SetActive(screenViewportRoot, true);
+        SetActive(sourcePanelObject, false);
+
+        if (screenViewport != null)
+        {
+            screenViewport.SetMode(DemoScreenOpenMode.SemiOpen);
+        }
+
+        if (pageSwitcher != null)
+        {
+            pageSwitcher.ShowPage(openingPage);
+        }
+
+        LogState("ApplyOpeningView. Start welcome timer.");
+        openingCoroutine = StartCoroutine(OpeningRoutine());
+    }
+
+    private IEnumerator OpeningRoutine()
+    {
+        yield return new WaitForSeconds(openingDuration);
+
+        if (!IsIgnOn)
+        {
+            yield break;
+        }
+
+        if (CurrentDisplayMode != KinemaMockDisplayMode.Opening)
+        {
+            yield break;
+        }
+
+        pendingMechaAction = PendingMechaAction.WaitFullAfterWelcome;
+        LogState("Welcome finished. Full requested. Waiting full_mode_sts.");
+        SendFullModeCommand();
+    }
+
+    private void ApplyFullView()
+    {
+        CurrentDisplayMode = KinemaMockDisplayMode.Full;
+
+        SetActive(screenViewportRoot, true);
+        SetActive(sourcePanelObject, true);
+
+        if (screenViewport != null)
+        {
+            screenViewport.SetMode(DemoScreenOpenMode.FullOpen);
+        }
+
+        if (sourcePanel != null)
+        {
+            sourcePanel.ApplyVehicleMode(DemoVehicleMode.Parking);
+            sourcePanel.ShowCurrentFullSource();
+        }
+        else if (pageSwitcher != null)
+        {
+            pageSwitcher.ShowPage(DemoPageId.LightingColorChange);
+        }
+
+        LogState("ApplyFullView");
+    }
+
+    private void ApplyHalfDriveView()
+    {
+        CurrentDisplayMode = KinemaMockDisplayMode.Half;
+
+        HidePopup();
+
+        SetActive(screenViewportRoot, true);
+        SetActive(sourcePanelObject, true);
+
+        if (screenViewport != null)
+        {
+            screenViewport.SetMode(DemoScreenOpenMode.SemiOpen);
+        }
+
+        if (pageSwitcher != null)
+        {
+            pageSwitcher.ShowPage(drivePage);
+        }
+
+        if (sourcePanel != null)
+        {
+            sourcePanel.ApplyVehicleMode(DemoVehicleMode.Drive);
+        }
+
+        LogState("ApplyHalfDriveView");
+    }
+
+    private void ApplyRearView()
+    {
+        CurrentDisplayMode = KinemaMockDisplayMode.RearView;
+
+        HidePopup();
+
+        SetActive(screenViewportRoot, true);
+        SetActive(sourcePanelObject, true);
+
+        if (screenViewport != null)
+        {
+            screenViewport.SetMode(DemoScreenOpenMode.SemiOpen);
+        }
+
+        if (pageSwitcher != null)
+        {
+            pageSwitcher.ShowPage(rearPage);
+        }
+
+        if (sourcePanel != null)
+        {
+            sourcePanel.ApplyVehicleMode(DemoVehicleMode.Rear);
+        }
+
+        LogState("ApplyRearView");
+    }
+
+    private void SendFullModeCommand()
+    {
+        if (!sendMechaCommand || commandBridge == null)
+        {
+            return;
+        }
+
+        commandBridge.SendFullModeCommand();
+    }
+
+    private void SendHalfModeCommand()
+    {
+        if (!sendMechaCommand || commandBridge == null)
+        {
+            return;
+        }
+
+        commandBridge.SendHalfModeCommand();
+    }
+
+    private void SendCloseModeCommand()
+    {
+        if (!sendMechaCommand || commandBridge == null)
+        {
+            return;
+        }
+
+        commandBridge.SendCloseModeCommand();
+    }
+
+    private void SendSystemStartRelatedCommands()
+    {
+        if (!sendMechaCommand || commandBridge == null)
+        {
+            return;
+        }
+
+        commandBridge.SendSystemStartRelatedCommands();
+    }
+
+    private void SendSystemStopRelatedCommands()
+    {
+        if (!sendMechaCommand || commandBridge == null)
+        {
+            return;
+        }
+
+        commandBridge.SendSystemStopRelatedCommands();
+    }
+
+    private void HidePopup()
+    {
+        if (popupController == null)
+        {
+            return;
+        }
+
+        popupController.HidePopup();
+    }
+
+    private void StopOpeningCoroutine()
+    {
+        if (openingCoroutine == null)
+        {
+            return;
+        }
+
+        StopCoroutine(openingCoroutine);
+        openingCoroutine = null;
+    }
+
+    private void SetActive(GameObject target, bool isActive)
+    {
+        if (target == null)
+        {
+            return;
+        }
+
+        target.SetActive(isActive);
     }
 
     private void ResolveReferences()
     {
-        if (commandSender == null)
+        if (commandBridge == null)
         {
-            commandSender = GetComponent<GuiCommandTcpClientSender>();
+            commandBridge = FindFirstObjectByType<KinemaCommandBridge>();
+        }
+    }
+
+    private void LogState(string message)
+    {
+        if (!logState)
+        {
+            return;
         }
 
-        if (commandSender == null)
-        {
-            commandSender = FindFirstObjectByType<GuiCommandTcpClientSender>();
-        }
+        Debug.Log(
+            "[KinemaDisplay] "
+            + message
+            + " | Display="
+            + CurrentDisplayMode
+            + " | Mecha="
+            + currentMechaState
+            + " | Pending="
+            + pendingMechaAction
+            + " | IG="
+            + IsIgnOn
+        );
     }
 }
