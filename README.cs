@@ -1,538 +1,306 @@
-using System.Collections.Generic;
+using System.Collections;
 using UnityEngine;
-using UnityEngine.EventSystems;
 using UnityEngine.UI;
+using UnityEngine.Video;
 
-public class OledTouchPointerBridge : MonoBehaviour
+[DisallowMultipleComponent]
+public class DemoDecorativeLoopVideoView : MonoBehaviour
 {
-    [Header("Event")]
-    [SerializeField] private GuiEventDispatcher eventDispatcher;
+    [Header("References")]
+    [SerializeField] private VideoPlayer videoPlayer;
+    [SerializeField] private RawImage targetRawImage;
 
-    [Header("Canvas")]
-    [SerializeField] private Canvas displayCanvas;
-    [SerializeField] private RectTransform touchSurfaceRect;
+    [Header("Playback")]
+    [SerializeField] private bool playOnEnable = true;
+    [SerializeField] private bool restartFromBeginningOnEnable = true;
+    [SerializeField] private bool loop = true;
 
-    [Header("Raycast Cameras")]
-    [SerializeField] private Camera driverRaycastCamera;
-    [SerializeField] private Camera passengerRaycastCamera;
+    [Header("Prepare")]
+    [SerializeField] private bool prepareOnAwake = true;
+    [SerializeField] private bool waitPrepareOnEnable = true;
+    [SerializeField] private float maxPrepareWaitSec = 0.5f;
 
-    [Header("Raycast Mode")]
-    [SerializeField] private bool useLocalGraphicRaycast = true;
-    [SerializeField] private bool useEventSystemRaycastFallback = false;
+    [Header("First Frame")]
+    [SerializeField] private bool hideRawImageBeforePlay = true;
+    [SerializeField] private float showRawImageDelaySec = 0.05f;
 
-    [Tooltip("通常はfalse。CanvasEventCameraSwitcherと競合させない。")]
-    [SerializeField] private bool setCanvasWorldCameraOnTouch = false;
-
-    [Header("OLED Layout")]
-    [SerializeField] private float driverWidth = 2650f;
-    [SerializeField] private float passengerOffsetX = 2650f;
-    [SerializeField] private bool yOriginTop = true;
-    [SerializeField] private bool clampCoordinate = true;
-
-    [Header("Tap On Down")]
-    [SerializeField] private bool enablePointerEvents = true;
-
-    // 実機Touchはdown時点で「Tap」として扱う。
-    [SerializeField] private bool triggerTapOnDown = true;
-
-    // down時に一瞬だけpointerDown/pointerUpを流して、Buttonの押下表示を残さない。
-    [SerializeField] private bool executePointerDownBeforeClick = true;
-    [SerializeField] private bool executePointerUpImmediately = true;
-
-    // up/moveはclick判定に使わない。
-    [SerializeField] private bool ignoreMoveEvent = true;
-    [SerializeField] private bool ignoreUpEvent = true;
-
-    [Header("Pointer Id")]
-    [SerializeField] private int driverPointerId = 1001;
-    [SerializeField] private int passengerPointerId = 1002;
+    [Header("Disable")]
+    [SerializeField] private bool pauseOnDisable = true;
+    [SerializeField] private bool hideRawImageOnDisable = true;
+    [SerializeField] private bool clearRenderTextureOnDisable = false;
+    [SerializeField] private Color clearColor = Color.black;
 
     [Header("Debug")]
-    [SerializeField] private bool logTouch = true;
-    [SerializeField] private bool logRaycastHit = true;
-    [SerializeField] private bool logPointerEvent = true;
-    [SerializeField] private bool logIgnoredEvents = false;
+    [SerializeField] private bool logState = false;
 
-    private readonly List<RaycastResult> raycastResults = new List<RaycastResult>();
-    private readonly List<Graphic> graphicBuffer = new List<Graphic>();
+    private Coroutine playRoutine;
+    private bool prepareRequested;
+    private RenderTexture cachedRenderTexture;
 
     private void Awake()
     {
         ResolveReferences();
+        SetupVideoPlayer();
+        CacheRenderTexture();
+
+        if (prepareOnAwake)
+        {
+            PrepareVideo();
+        }
     }
 
     private void OnEnable()
     {
         ResolveReferences();
+        SetupVideoPlayer();
+        CacheRenderTexture();
 
-        if (eventDispatcher != null)
+        if (hideRawImageBeforePlay && targetRawImage != null)
         {
-            eventDispatcher.TouchReceived -= OnTouchReceived;
-            eventDispatcher.TouchReceived += OnTouchReceived;
+            targetRawImage.enabled = false;
+        }
+
+        if (playOnEnable)
+        {
+            StartPlayRoutine();
         }
     }
 
     private void OnDisable()
     {
-        if (eventDispatcher != null)
+        StopPlayRoutine();
+
+        if (videoPlayer != null && pauseOnDisable)
         {
-            eventDispatcher.TouchReceived -= OnTouchReceived;
+            videoPlayer.Pause();
+        }
+
+        if (targetRawImage != null && hideRawImageOnDisable)
+        {
+            targetRawImage.enabled = false;
+        }
+
+        if (clearRenderTextureOnDisable)
+        {
+            ClearRenderTexture();
         }
     }
 
-    private void OnTouchReceived(GuiEventMessage message)
+    private void OnDestroy()
     {
-        if (message == null || message.TouchPayload == null)
+        if (videoPlayer != null)
         {
-            return;
-        }
-
-        GuiEventTouchPayload payload = message.TouchPayload;
-
-        string sourceText = NormalizeText(payload.source);
-        string eventText = NormalizeText(payload.GetTouchEventText());
-
-        if (eventText == "move" && ignoreMoveEvent)
-        {
-            LogIgnoredEvent(sourceText, eventText, payload);
-            return;
-        }
-
-        if (eventText == "up" && ignoreUpEvent)
-        {
-            LogIgnoredEvent(sourceText, eventText, payload);
-            return;
-        }
-
-        // 現仕様ではdownのみをTap triggerとして扱う。
-        if (triggerTapOnDown && eventText != "down")
-        {
-            LogIgnoredEvent(sourceText, eventText, payload);
-            return;
-        }
-
-        Camera sourceCamera = GetRaycastCamera(sourceText);
-
-        if (sourceCamera == null)
-        {
-            Debug.LogWarning("[OLED Pointer] Raycast camera is not assigned for source=" + sourceText);
-            return;
-        }
-
-        if (!TryConvertToPoints(
-                payload,
-                sourceText,
-                sourceCamera,
-                out Vector2 screenPoint,
-                out Vector2 canvasLocalPoint,
-                out Vector2 sourceLocalPoint
-            ))
-        {
-            return;
-        }
-
-        if (logTouch)
-        {
-            Debug.Log(
-                "[OLED Pointer] source="
-                + sourceText
-                + " event="
-                + eventText
-                + " touch=("
-                + payload.x
-                + ", "
-                + payload.y
-                + ") sourceLocal="
-                + sourceLocalPoint
-                + " canvasLocal="
-                + canvasLocalPoint
-                + " screen="
-                + screenPoint
-                + " camera="
-                + sourceCamera.name
-            );
-        }
-
-        GameObject hitObject = RaycastTop(
-            screenPoint,
-            canvasLocalPoint,
-            sourceCamera,
-            out RaycastResult topResult,
-            out string hitMethod
-        );
-
-        if (logRaycastHit)
-        {
-            string hitName = hitObject == null ? "None" : GetHierarchyPath(hitObject);
-            Debug.Log("[OLED Pointer Raycast] hit=" + hitName + " hitMethod=" + hitMethod);
-        }
-
-        if (!enablePointerEvents)
-        {
-            return;
-        }
-
-        if (triggerTapOnDown && eventText == "down")
-        {
-            ExecuteTapOnDown(
-                sourceText,
-                screenPoint,
-                topResult,
-                sourceCamera
-            );
+            videoPlayer.prepareCompleted -= OnPrepareCompleted;
+            videoPlayer.errorReceived -= OnVideoErrorReceived;
         }
     }
 
-    private bool TryConvertToPoints(
-        GuiEventTouchPayload payload,
-        string normalizedSource,
-        Camera sourceCamera,
-        out Vector2 screenPoint,
-        out Vector2 canvasLocalPoint,
-        out Vector2 sourceLocalPoint
-    )
+    public void PrepareVideo()
     {
-        screenPoint = Vector2.zero;
-        canvasLocalPoint = Vector2.zero;
-        sourceLocalPoint = Vector2.zero;
-
-        if (touchSurfaceRect == null || sourceCamera == null)
+        if (videoPlayer == null)
         {
-            return false;
+            return;
         }
 
-        Rect rect = touchSurfaceRect.rect;
-
-        float x = payload.x;
-        float y = payload.y;
-
-        if (clampCoordinate)
+        if (videoPlayer.isPrepared)
         {
-            x = Mathf.Clamp(x, 0f, driverWidth);
-            y = Mathf.Clamp(y, 0f, rect.height);
+            return;
         }
 
-        float globalX = x;
-
-        if (normalizedSource == "passenger")
+        if (prepareRequested)
         {
-            globalX = passengerOffsetX + x;
-        }
-        else if (normalizedSource != "driver")
-        {
-            Debug.LogWarning("[OLED Pointer] Unknown source: " + payload.source);
-            return false;
+            return;
         }
 
-        float canvasLocalX = rect.xMin + globalX;
-        float canvasLocalY = yOriginTop
-            ? rect.yMax - y
-            : rect.yMin + y;
+        prepareRequested = true;
+        videoPlayer.Prepare();
 
-        sourceLocalPoint = new Vector2(x, canvasLocalY);
-        canvasLocalPoint = new Vector2(canvasLocalX, canvasLocalY);
-
-        Vector3 worldPoint = touchSurfaceRect.TransformPoint(
-            new Vector3(canvasLocalPoint.x, canvasLocalPoint.y, 0f)
-        );
-
-        screenPoint = RectTransformUtility.WorldToScreenPoint(sourceCamera, worldPoint);
-        return true;
+        Log("Prepare requested.");
     }
 
-    private GameObject RaycastTop(
-        Vector2 screenPoint,
-        Vector2 canvasLocalPoint,
-        Camera sourceCamera,
-        out RaycastResult topResult,
-        out string hitMethod
-    )
+    public void RestartVideo()
     {
-        topResult = new RaycastResult();
-        hitMethod = "None";
+        StartPlayRoutine();
+    }
 
-        if (useLocalGraphicRaycast)
+    private void StartPlayRoutine()
+    {
+        StopPlayRoutine();
+        playRoutine = StartCoroutine(PlayRoutine());
+    }
+
+    private void StopPlayRoutine()
+    {
+        if (playRoutine == null)
         {
-            bool localHit = UiLocalGraphicRaycastUtility.TryRaycastTopGraphic(
-                displayCanvas,
-                touchSurfaceRect,
-                canvasLocalPoint,
-                screenPoint,
-                graphicBuffer,
-                out topResult
-            );
+            return;
+        }
 
-            if (localHit)
+        StopCoroutine(playRoutine);
+        playRoutine = null;
+    }
+
+    private IEnumerator PlayRoutine()
+    {
+        if (videoPlayer == null)
+        {
+            yield break;
+        }
+
+        if (waitPrepareOnEnable && !videoPlayer.isPrepared)
+        {
+            PrepareVideo();
+
+            float waitStart = Time.unscaledTime;
+
+            while (videoPlayer != null && !videoPlayer.isPrepared)
             {
-                hitMethod = "LocalGraphic";
-                return topResult.gameObject;
+                if (Time.unscaledTime - waitStart >= maxPrepareWaitSec)
+                {
+                    Log("Prepare timeout. Start play anyway.");
+                    break;
+                }
+
+                yield return null;
             }
         }
 
-        if (useEventSystemRaycastFallback)
+        if (videoPlayer == null)
         {
-            GameObject eventSystemHit = RaycastByEventSystem(
-                screenPoint,
-                sourceCamera,
-                out topResult
-            );
+            yield break;
+        }
 
-            if (eventSystemHit != null)
+        if (restartFromBeginningOnEnable)
+        {
+            TrySetVideoToFirstFrame();
+        }
+
+        videoPlayer.Play();
+
+        if (showRawImageDelaySec > 0f)
+        {
+            float elapsed = 0f;
+
+            while (elapsed < showRawImageDelaySec)
             {
-                hitMethod = "EventSystem";
-                return eventSystemHit;
+                elapsed += Time.unscaledDeltaTime;
+                yield return null;
             }
         }
+        else
+        {
+            yield return null;
+        }
 
-        return null;
+        if (targetRawImage != null)
+        {
+            targetRawImage.enabled = true;
+        }
+
+        Log("Play.");
+        playRoutine = null;
     }
 
-    private GameObject RaycastByEventSystem(
-        Vector2 screenPoint,
-        Camera sourceCamera,
-        out RaycastResult topResult
-    )
+    private void TrySetVideoToFirstFrame()
     {
-        topResult = new RaycastResult();
-
-        EventSystem eventSystem = EventSystem.current;
-
-        if (eventSystem == null)
-        {
-            return null;
-        }
-
-        Camera previousCamera = null;
-
-        if (setCanvasWorldCameraOnTouch && displayCanvas != null)
-        {
-            previousCamera = displayCanvas.worldCamera;
-            displayCanvas.worldCamera = sourceCamera;
-        }
-
-        PointerEventData eventData = new PointerEventData(eventSystem);
-        eventData.position = screenPoint;
-        eventData.button = PointerEventData.InputButton.Left;
-
-        raycastResults.Clear();
-        eventSystem.RaycastAll(eventData, raycastResults);
-
-        if (setCanvasWorldCameraOnTouch && displayCanvas != null)
-        {
-            displayCanvas.worldCamera = previousCamera;
-        }
-
-        if (raycastResults.Count == 0)
-        {
-            return null;
-        }
-
-        topResult = raycastResults[0];
-        return topResult.gameObject;
-    }
-
-    private void ExecuteTapOnDown(
-        string sourceText,
-        Vector2 screenPoint,
-        RaycastResult raycastResult,
-        Camera sourceCamera
-    )
-    {
-        EventSystem eventSystem = EventSystem.current;
-
-        if (eventSystem == null)
+        if (videoPlayer == null)
         {
             return;
         }
 
-        GameObject currentOver = raycastResult.gameObject;
-
-        if (currentOver == null)
+        try
         {
-            LogPointer("TapOnDown hit none.");
+            videoPlayer.time = 0;
+            videoPlayer.frame = 0;
+        }
+        catch
+        {
+            // 一部Video sourceではframe設定が失敗する場合があるため無視する。
+        }
+    }
+
+    private void SetupVideoPlayer()
+    {
+        if (videoPlayer == null)
+        {
             return;
         }
 
-        PointerEventData eventData = new PointerEventData(eventSystem);
-        eventData.pointerId = GetPointerId(sourceText);
-        eventData.button = PointerEventData.InputButton.Left;
-        eventData.position = screenPoint;
-        eventData.pressPosition = screenPoint;
-        eventData.delta = Vector2.zero;
-        eventData.clickTime = Time.unscaledTime;
-        eventData.clickCount = 1;
-        eventData.pointerCurrentRaycast = raycastResult;
-        eventData.pointerPressRaycast = raycastResult;
-        eventData.useDragThreshold = false;
-        eventData.eligibleForClick = true;
+        videoPlayer.playOnAwake = false;
+        videoPlayer.isLooping = loop;
 
-        GameObject pointerDownTarget = null;
+        videoPlayer.prepareCompleted -= OnPrepareCompleted;
+        videoPlayer.prepareCompleted += OnPrepareCompleted;
 
-        if (executePointerDownBeforeClick)
+        videoPlayer.errorReceived -= OnVideoErrorReceived;
+        videoPlayer.errorReceived += OnVideoErrorReceived;
+    }
+
+    private void OnPrepareCompleted(VideoPlayer player)
+    {
+        prepareRequested = false;
+        Log("Prepare completed.");
+    }
+
+    private void OnVideoErrorReceived(VideoPlayer player, string message)
+    {
+        prepareRequested = false;
+        Debug.LogWarning("[DecorativeLoopVideo] Error: " + message + " object=" + gameObject.name);
+    }
+
+    private void ClearRenderTexture()
+    {
+        CacheRenderTexture();
+
+        if (cachedRenderTexture == null)
         {
-            pointerDownTarget = ExecuteEvents.ExecuteHierarchy(
-                currentOver,
-                eventData,
-                ExecuteEvents.pointerDownHandler
-            );
-        }
-
-        GameObject clickTarget = ExecuteEvents.GetEventHandler<IPointerClickHandler>(currentOver);
-
-        if (clickTarget == null)
-        {
-            clickTarget = pointerDownTarget;
-        }
-
-        eventData.pointerPress = clickTarget;
-        eventData.rawPointerPress = currentOver;
-
-        if (executePointerUpImmediately && pointerDownTarget != null)
-        {
-            ExecuteEvents.Execute(
-                pointerDownTarget,
-                eventData,
-                ExecuteEvents.pointerUpHandler
-            );
-        }
-
-        if (clickTarget != null)
-        {
-            ExecuteEvents.Execute(
-                clickTarget,
-                eventData,
-                ExecuteEvents.pointerClickHandler
-            );
-
-            LogPointer(
-                "TapOnDown current="
-                + GetObjectName(currentOver)
-                + " down="
-                + GetObjectName(pointerDownTarget)
-                + " click="
-                + GetObjectName(clickTarget)
-            );
-
             return;
         }
 
-        LogPointer(
-            "TapOnDown no click handler. current="
-            + GetObjectName(currentOver)
-            + " down="
-            + GetObjectName(pointerDownTarget)
-        );
+        RenderTexture previous = RenderTexture.active;
+        RenderTexture.active = cachedRenderTexture;
+
+        GL.Clear(true, true, clearColor);
+
+        RenderTexture.active = previous;
     }
 
-    private int GetPointerId(string sourceText)
+    private void CacheRenderTexture()
     {
-        if (sourceText == "passenger")
+        cachedRenderTexture = null;
+
+        if (videoPlayer != null && videoPlayer.targetTexture != null)
         {
-            return passengerPointerId;
+            cachedRenderTexture = videoPlayer.targetTexture;
+            return;
         }
 
-        return driverPointerId;
-    }
-
-    private Camera GetRaycastCamera(string source)
-    {
-        if (source == "driver")
+        if (targetRawImage != null && targetRawImage.texture is RenderTexture renderTexture)
         {
-            return driverRaycastCamera;
+            cachedRenderTexture = renderTexture;
         }
-
-        if (source == "passenger")
-        {
-            return passengerRaycastCamera;
-        }
-
-        return null;
     }
 
     private void ResolveReferences()
     {
-        if (eventDispatcher == null)
+        if (videoPlayer == null)
         {
-            eventDispatcher = FindFirstObjectByType<GuiEventDispatcher>();
+            videoPlayer = GetComponentInChildren<VideoPlayer>(true);
         }
 
-        if (displayCanvas == null)
+        if (targetRawImage == null)
         {
-            displayCanvas = FindFirstObjectByType<Canvas>();
-        }
-
-        if (touchSurfaceRect == null && displayCanvas != null)
-        {
-            touchSurfaceRect = displayCanvas.GetComponent<RectTransform>();
+            targetRawImage = GetComponentInChildren<RawImage>(true);
         }
     }
 
-    private void LogIgnoredEvent(string sourceText, string eventText, GuiEventTouchPayload payload)
+    private void Log(string message)
     {
-        if (!logIgnoredEvents)
+        if (!logState)
         {
             return;
         }
 
-        Debug.Log(
-            "[OLED Pointer] ignored event source="
-            + sourceText
-            + " event="
-            + eventText
-            + " touch=("
-            + payload.x
-            + ", "
-            + payload.y
-            + ")"
-        );
-    }
-
-    private string NormalizeText(string value)
-    {
-        if (string.IsNullOrEmpty(value))
-        {
-            return "";
-        }
-
-        return value.Trim().ToLowerInvariant().Replace("_", "").Replace("-", "");
-    }
-
-    private void LogPointer(string message)
-    {
-        if (!logPointerEvent)
-        {
-            return;
-        }
-
-        Debug.Log("[OLED Pointer] " + message);
-    }
-
-    private string GetObjectName(GameObject target)
-    {
-        if (target == null)
-        {
-            return "None";
-        }
-
-        return target.name;
-    }
-
-    private string GetHierarchyPath(GameObject target)
-    {
-        if (target == null)
-        {
-            return "None";
-        }
-
-        string path = target.name;
-        Transform current = target.transform.parent;
-
-        while (current != null)
-        {
-            path = current.name + "/" + path;
-            current = current.parent;
-        }
-
-        return path;
+        Debug.Log("[DecorativeLoopVideo] " + message + " object=" + gameObject.name);
     }
 }
