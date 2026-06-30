@@ -26,8 +26,15 @@ public class OledTouchPointerBridge : MonoBehaviour
     [Header("OLED Layout")]
     [SerializeField] private float driverWidth = 2650f;
     [SerializeField] private float passengerOffsetX = 2650f;
+
+    // 物理OLEDの高さ。Full/Semiに関係なくDisplay自体は1392。
+    [SerializeField] private float physicalDisplayHeight = 1392f;
+
     [SerializeField] private bool yOriginTop = true;
     [SerializeField] private bool clampCoordinate = true;
+
+    // Semi時に表示されていない領域を誤って端にClampしないため。
+    [SerializeField] private bool ignoreTouchOutsideVisibleArea = true;
 
     [Header("Touch Rotation")]
     [SerializeField] private bool rotateDriverTouch180 = false;
@@ -209,13 +216,38 @@ public class OledTouchPointerBridge : MonoBehaviour
         float x = payload.x;
         float y = payload.y;
 
+        // まず物理Display座標としてClampする。
+        // Semi時でもTouch入力は物理Display基準で来る可能性があるため、
+        // ここではrect.height(720)ではなくphysicalDisplayHeight(1392)を使う。
         if (clampCoordinate)
+        {
+            x = Mathf.Clamp(x, 0f, driverWidth);
+            y = Mathf.Clamp(y, 0f, physicalDisplayHeight);
+        }
+
+        ApplyTouchRotationIfNeeded(normalizedSource, ref x, ref y);
+
+        // 180度回転後、GUI可視領域外にあるTouchは無視する。
+        // 例: Semi 720px表示で、変換後yが720を超える場合。
+        if (ignoreTouchOutsideVisibleArea)
+        {
+            if (x < 0f || x > driverWidth)
+            {
+                LogOutOfVisibleArea(normalizedSource, x, y, rect);
+                return false;
+            }
+
+            if (y < 0f || y > rect.height)
+            {
+                LogOutOfVisibleArea(normalizedSource, x, y, rect);
+                return false;
+            }
+        }
+        else if (clampCoordinate)
         {
             x = Mathf.Clamp(x, 0f, driverWidth);
             y = Mathf.Clamp(y, 0f, rect.height);
         }
-
-        ApplyTouchRotationIfNeeded(normalizedSource, rect, ref x, ref y);
 
         float globalX = x;
 
@@ -225,7 +257,7 @@ public class OledTouchPointerBridge : MonoBehaviour
         }
         else if (normalizedSource != "driver")
         {
-            Debug.LogWarning("[OLED Pointer] Unknown source: " + payload.source);
+            Debug.LogWarning("[OLED Pointer] Unknown source: " + normalizedSource);
             return false;
         }
 
@@ -247,7 +279,6 @@ public class OledTouchPointerBridge : MonoBehaviour
 
     private void ApplyTouchRotationIfNeeded(
         string normalizedSource,
-        Rect rect,
         ref float x,
         ref float y
     )
@@ -268,8 +299,10 @@ public class OledTouchPointerBridge : MonoBehaviour
             return;
         }
 
+        // 180度回転は物理Display全体を基準にする。
+        // Semi時のrect.height=720を使うと、Touchだけ上側に残る。
         x = driverWidth - x;
-        y = rect.height - y;
+        y = physicalDisplayHeight - y;
     }
 
     private GameObject RaycastTop(
@@ -312,7 +345,7 @@ public class OledTouchPointerBridge : MonoBehaviour
             if (eventSystemHit != null)
             {
                 hitMethod = "EventSystem";
-                return eventSystemHit;
+                return topResult.gameObject;
             }
         }
 
@@ -515,6 +548,29 @@ public class OledTouchPointerBridge : MonoBehaviour
             + ", "
             + payload.y
             + ")"
+        );
+    }
+
+    private void LogOutOfVisibleArea(string sourceText, float x, float y, Rect rect)
+    {
+        if (!logIgnoredEvents)
+        {
+            return;
+        }
+
+        Debug.Log(
+            "[OLED Pointer] ignored outside visible area source="
+            + sourceText
+            + " converted=("
+            + x.ToString("0.###")
+            + ", "
+            + y.ToString("0.###")
+            + ") visibleSize=("
+            + driverWidth.ToString("0.###")
+            + ", "
+            + rect.height.ToString("0.###")
+            + ") physicalHeight="
+            + physicalDisplayHeight.ToString("0.###")
         );
     }
 
