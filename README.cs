@@ -1,9 +1,8 @@
-using System.Collections.Generic;
+using System.Collections;
 using UnityEngine;
-using UnityEngine.EventSystems;
 using UnityEngine.UI;
 
-public class OledTouchPointerBridge : MonoBehaviour
+public class OledTouchDebugOverlay : MonoBehaviour
 {
     [Header("Event")]
     [SerializeField] private GuiEventDispatcher eventDispatcher;
@@ -11,17 +10,6 @@ public class OledTouchPointerBridge : MonoBehaviour
     [Header("Canvas")]
     [SerializeField] private Canvas displayCanvas;
     [SerializeField] private RectTransform touchSurfaceRect;
-
-    [Header("Raycast Cameras")]
-    [SerializeField] private Camera driverRaycastCamera;
-    [SerializeField] private Camera passengerRaycastCamera;
-
-    [Header("Raycast Mode")]
-    [SerializeField] private bool useLocalGraphicRaycast = true;
-    [SerializeField] private bool useEventSystemRaycastFallback = false;
-
-    [Tooltip("通常はfalse。CanvasEventCameraSwitcherと競合させない。")]
-    [SerializeField] private bool setCanvasWorldCameraOnTouch = false;
 
     [Header("OLED Layout")]
     [SerializeField] private float driverWidth = 2650f;
@@ -32,49 +20,40 @@ public class OledTouchPointerBridge : MonoBehaviour
 
     [SerializeField] private bool yOriginTop = true;
     [SerializeField] private bool clampCoordinate = true;
-
-    // Semi時に表示されていない領域を誤って端にClampしないため。
     [SerializeField] private bool ignoreTouchOutsideVisibleArea = true;
 
     [Header("Touch Rotation")]
     [SerializeField] private bool rotateDriverTouch180 = false;
     [SerializeField] private bool rotatePassengerTouch180 = false;
 
-    [Header("Tap On Down")]
-    [SerializeField] private bool enablePointerEvents = true;
+    [Header("Debug Circle")]
+    [SerializeField] private bool showDebugCircle = true;
+    [SerializeField] private bool showDown = true;
+    [SerializeField] private bool showMove = false;
+    [SerializeField] private bool showUp = false;
+    [SerializeField] private float circleSize = 80f;
+    [SerializeField] private float lifeTime = 1.0f;
+    [SerializeField] private Color circleColor = new Color(1f, 0f, 0f, 0.8f);
 
-    // 実機Touchはdown時点で「Tap」として扱う。
-    [SerializeField] private bool triggerTapOnDown = true;
+    [Header("Log")]
+    [SerializeField] private bool logTouchPosition = true;
+    [SerializeField] private bool logIgnoredTouch = false;
 
-    // down時に一瞬だけpointerDown/pointerUpを流して、Buttonの押下表示を残さない。
-    [SerializeField] private bool executePointerDownBeforeClick = true;
-    [SerializeField] private bool executePointerUpImmediately = true;
-
-    // up/moveはclick判定に使わない。
-    [SerializeField] private bool ignoreMoveEvent = true;
-    [SerializeField] private bool ignoreUpEvent = true;
-
-    [Header("Pointer Id")]
-    [SerializeField] private int driverPointerId = 1001;
-    [SerializeField] private int passengerPointerId = 1002;
-
-    [Header("Debug")]
-    [SerializeField] private bool logTouch = true;
-    [SerializeField] private bool logRaycastHit = true;
-    [SerializeField] private bool logPointerEvent = true;
-    [SerializeField] private bool logIgnoredEvents = false;
-
-    private readonly List<RaycastResult> raycastResults = new List<RaycastResult>();
-    private readonly List<Graphic> graphicBuffer = new List<Graphic>();
+    private RectTransform debugLayer;
+    private Sprite circleSprite;
 
     private void Awake()
     {
         ResolveReferences();
+        EnsureDebugLayer();
+        EnsureCircleSprite();
     }
 
     private void OnEnable()
     {
         ResolveReferences();
+        EnsureDebugLayer();
+        EnsureCircleSprite();
 
         if (eventDispatcher != null)
         {
@@ -93,6 +72,11 @@ public class OledTouchPointerBridge : MonoBehaviour
 
     private void OnTouchReceived(GuiEventMessage message)
     {
+        if (!showDebugCircle)
+        {
+            return;
+        }
+
         if (message == null || message.TouchPayload == null)
         {
             return;
@@ -103,49 +87,26 @@ public class OledTouchPointerBridge : MonoBehaviour
         string sourceText = NormalizeText(payload.source);
         string eventText = NormalizeText(payload.GetTouchEventText());
 
-        if (eventText == "move" && ignoreMoveEvent)
+        if (!ShouldShowEvent(eventText))
         {
-            LogIgnoredEvent(sourceText, eventText, payload);
             return;
         }
 
-        if (eventText == "up" && ignoreUpEvent)
-        {
-            LogIgnoredEvent(sourceText, eventText, payload);
-            return;
-        }
-
-        // 現仕様ではdownのみをTap triggerとして扱う。
-        if (triggerTapOnDown && eventText != "down")
-        {
-            LogIgnoredEvent(sourceText, eventText, payload);
-            return;
-        }
-
-        Camera sourceCamera = GetRaycastCamera(sourceText);
-
-        if (sourceCamera == null)
-        {
-            Debug.LogWarning("[OLED Pointer] Raycast camera is not assigned for source=" + sourceText);
-            return;
-        }
-
-        if (!TryConvertToPoints(
+        if (!TryConvertToCanvasLocal(
                 payload,
                 sourceText,
-                sourceCamera,
-                out Vector2 screenPoint,
                 out Vector2 canvasLocalPoint,
-                out Vector2 sourceLocalPoint
+                out Vector2 sourceLocalPoint,
+                out string interpretedHalf
             ))
         {
             return;
         }
 
-        if (logTouch)
+        if (logTouchPosition)
         {
             Debug.Log(
-                "[OLED Pointer] source="
+                "[OLED Touch Debug Circle] source="
                 + sourceText
                 + " event="
                 + eventText
@@ -157,57 +118,55 @@ public class OledTouchPointerBridge : MonoBehaviour
                 + sourceLocalPoint
                 + " canvasLocal="
                 + canvasLocalPoint
-                + " screen="
-                + screenPoint
-                + " camera="
-                + sourceCamera.name
+                + " interpretedHalf="
+                + interpretedHalf
+                + " rectWidth="
+                + touchSurfaceRect.rect.width
+                + " rectHeight="
+                + touchSurfaceRect.rect.height
+                + " physicalHeight="
+                + physicalDisplayHeight
             );
         }
 
-        GameObject hitObject = RaycastTop(
-            screenPoint,
-            canvasLocalPoint,
-            sourceCamera,
-            out RaycastResult topResult,
-            out string hitMethod
-        );
-
-        if (logRaycastHit)
-        {
-            string hitName = hitObject == null ? "None" : GetHierarchyPath(hitObject);
-            Debug.Log("[OLED Pointer Raycast] hit=" + hitName + " hitMethod=" + hitMethod);
-        }
-
-        if (!enablePointerEvents)
-        {
-            return;
-        }
-
-        if (triggerTapOnDown && eventText == "down")
-        {
-            ExecuteTapOnDown(
-                sourceText,
-                screenPoint,
-                topResult
-            );
-        }
+        ShowCircle(canvasLocalPoint);
     }
 
-    private bool TryConvertToPoints(
+    private bool ShouldShowEvent(string eventText)
+    {
+        if (eventText == "down")
+        {
+            return showDown;
+        }
+
+        if (eventText == "move")
+        {
+            return showMove;
+        }
+
+        if (eventText == "up")
+        {
+            return showUp;
+        }
+
+        return true;
+    }
+
+    private bool TryConvertToCanvasLocal(
         GuiEventTouchPayload payload,
         string normalizedSource,
-        Camera sourceCamera,
-        out Vector2 screenPoint,
         out Vector2 canvasLocalPoint,
-        out Vector2 sourceLocalPoint
+        out Vector2 sourceLocalPoint,
+        out string interpretedHalf
     )
     {
-        screenPoint = Vector2.zero;
         canvasLocalPoint = Vector2.zero;
         sourceLocalPoint = Vector2.zero;
+        interpretedHalf = "Unknown";
 
-        if (touchSurfaceRect == null || sourceCamera == null)
+        if (touchSurfaceRect == null)
         {
+            Debug.LogWarning("[OLED Touch Debug Circle] Touch Surface Rect is not assigned.");
             return false;
         }
 
@@ -227,8 +186,6 @@ public class OledTouchPointerBridge : MonoBehaviour
 
         ApplyTouchRotationIfNeeded(normalizedSource, ref x, ref y);
 
-        // 180度回転後、GUI可視領域外にあるTouchは無視する。
-        // 例: Semi 720px表示で、変換後yが720を超える場合。
         if (ignoreTouchOutsideVisibleArea)
         {
             if (x < 0f || x > driverWidth)
@@ -257,7 +214,7 @@ public class OledTouchPointerBridge : MonoBehaviour
         }
         else if (normalizedSource != "driver")
         {
-            Debug.LogWarning("[OLED Pointer] Unknown source: " + normalizedSource);
+            Debug.LogWarning("[OLED Touch Debug Circle] Unknown source: " + payload.source);
             return false;
         }
 
@@ -266,14 +223,13 @@ public class OledTouchPointerBridge : MonoBehaviour
             ? rect.yMax - y
             : rect.yMin + y;
 
-        sourceLocalPoint = new Vector2(x, canvasLocalY);
         canvasLocalPoint = new Vector2(canvasLocalX, canvasLocalY);
+        sourceLocalPoint = new Vector2(x, canvasLocalY);
 
-        Vector3 worldPoint = touchSurfaceRect.TransformPoint(
-            new Vector3(canvasLocalPoint.x, canvasLocalPoint.y, 0f)
-        );
+        interpretedHalf = canvasLocalX < 0f
+            ? "DriverHalf"
+            : "PassengerHalf";
 
-        screenPoint = RectTransformUtility.WorldToScreenPoint(sourceCamera, worldPoint);
         return true;
     }
 
@@ -305,212 +261,155 @@ public class OledTouchPointerBridge : MonoBehaviour
         y = physicalDisplayHeight - y;
     }
 
-    private GameObject RaycastTop(
-        Vector2 screenPoint,
-        Vector2 canvasLocalPoint,
-        Camera sourceCamera,
-        out RaycastResult topResult,
-        out string hitMethod
-    )
+    private void ShowCircle(Vector2 canvasLocalPoint)
     {
-        topResult = new RaycastResult();
-        hitMethod = "None";
+        EnsureDebugLayer();
+        EnsureCircleSprite();
 
-        if (useLocalGraphicRaycast)
-        {
-            bool localHit = UiLocalGraphicRaycastUtility.TryRaycastTopGraphic(
-                displayCanvas,
-                touchSurfaceRect,
-                canvasLocalPoint,
-                screenPoint,
-                graphicBuffer,
-                out topResult
-            );
-
-            if (localHit)
-            {
-                hitMethod = "LocalGraphic";
-                return topResult.gameObject;
-            }
-        }
-
-        if (useEventSystemRaycastFallback)
-        {
-            GameObject eventSystemHit = RaycastByEventSystem(
-                screenPoint,
-                sourceCamera,
-                out topResult
-            );
-
-            if (eventSystemHit != null)
-            {
-                hitMethod = "EventSystem";
-                return topResult.gameObject;
-            }
-        }
-
-        return null;
-    }
-
-    private GameObject RaycastByEventSystem(
-        Vector2 screenPoint,
-        Camera sourceCamera,
-        out RaycastResult topResult
-    )
-    {
-        topResult = new RaycastResult();
-
-        EventSystem eventSystem = EventSystem.current;
-
-        if (eventSystem == null)
-        {
-            return null;
-        }
-
-        Camera previousCamera = null;
-
-        if (setCanvasWorldCameraOnTouch && displayCanvas != null)
-        {
-            previousCamera = displayCanvas.worldCamera;
-            displayCanvas.worldCamera = sourceCamera;
-        }
-
-        PointerEventData eventData = new PointerEventData(eventSystem);
-        eventData.position = screenPoint;
-        eventData.button = PointerEventData.InputButton.Left;
-
-        raycastResults.Clear();
-        eventSystem.RaycastAll(eventData, raycastResults);
-
-        if (setCanvasWorldCameraOnTouch && displayCanvas != null)
-        {
-            displayCanvas.worldCamera = previousCamera;
-        }
-
-        if (raycastResults.Count == 0)
-        {
-            return null;
-        }
-
-        topResult = raycastResults[0];
-        return topResult.gameObject;
-    }
-
-    private void ExecuteTapOnDown(
-        string sourceText,
-        Vector2 screenPoint,
-        RaycastResult raycastResult
-    )
-    {
-        EventSystem eventSystem = EventSystem.current;
-
-        if (eventSystem == null)
+        if (debugLayer == null || circleSprite == null)
         {
             return;
         }
 
-        GameObject currentOver = raycastResult.gameObject;
-
-        if (currentOver == null)
-        {
-            LogPointer("TapOnDown hit none.");
-            return;
-        }
-
-        PointerEventData eventData = new PointerEventData(eventSystem);
-        eventData.pointerId = GetPointerId(sourceText);
-        eventData.button = PointerEventData.InputButton.Left;
-        eventData.position = screenPoint;
-        eventData.pressPosition = screenPoint;
-        eventData.delta = Vector2.zero;
-        eventData.clickTime = Time.unscaledTime;
-        eventData.clickCount = 1;
-        eventData.pointerCurrentRaycast = raycastResult;
-        eventData.pointerPressRaycast = raycastResult;
-        eventData.useDragThreshold = false;
-        eventData.eligibleForClick = true;
-
-        GameObject pointerDownTarget = null;
-
-        if (executePointerDownBeforeClick)
-        {
-            pointerDownTarget = ExecuteEvents.ExecuteHierarchy(
-                currentOver,
-                eventData,
-                ExecuteEvents.pointerDownHandler
-            );
-        }
-
-        GameObject clickTarget = ExecuteEvents.GetEventHandler<IPointerClickHandler>(currentOver);
-
-        if (clickTarget == null)
-        {
-            clickTarget = pointerDownTarget;
-        }
-
-        eventData.pointerPress = clickTarget;
-        eventData.rawPointerPress = currentOver;
-
-        if (executePointerUpImmediately && pointerDownTarget != null)
-        {
-            ExecuteEvents.Execute(
-                pointerDownTarget,
-                eventData,
-                ExecuteEvents.pointerUpHandler
-            );
-        }
-
-        if (clickTarget != null)
-        {
-            ExecuteEvents.Execute(
-                clickTarget,
-                eventData,
-                ExecuteEvents.pointerClickHandler
-            );
-
-            LogPointer(
-                "TapOnDown current="
-                + GetObjectName(currentOver)
-                + " down="
-                + GetObjectName(pointerDownTarget)
-                + " click="
-                + GetObjectName(clickTarget)
-            );
-
-            return;
-        }
-
-        LogPointer(
-            "TapOnDown no click handler. current="
-            + GetObjectName(currentOver)
-            + " down="
-            + GetObjectName(pointerDownTarget)
+        GameObject circleObject = new GameObject(
+            "TouchDebugCircle",
+            typeof(RectTransform),
+            typeof(CanvasRenderer),
+            typeof(Image)
         );
+
+        circleObject.transform.SetParent(debugLayer, false);
+
+        RectTransform rectTransform = circleObject.GetComponent<RectTransform>();
+        rectTransform.anchorMin = new Vector2(0.5f, 0.5f);
+        rectTransform.anchorMax = new Vector2(0.5f, 0.5f);
+        rectTransform.pivot = new Vector2(0.5f, 0.5f);
+        rectTransform.sizeDelta = new Vector2(circleSize, circleSize);
+        rectTransform.anchoredPosition = canvasLocalPoint;
+
+        Image image = circleObject.GetComponent<Image>();
+        image.sprite = circleSprite;
+        image.color = circleColor;
+        image.raycastTarget = false;
+
+        circleObject.transform.SetAsLastSibling();
+
+        StartCoroutine(FadeAndDestroy(image, lifeTime));
     }
 
-    private int GetPointerId(string sourceText)
+    private IEnumerator FadeAndDestroy(Image image, float duration)
     {
-        if (sourceText == "passenger")
+        if (image == null)
         {
-            return passengerPointerId;
+            yield break;
         }
 
-        return driverPointerId;
+        float elapsed = 0f;
+        Color startColor = image.color;
+
+        while (elapsed < duration)
+        {
+            if (image == null)
+            {
+                yield break;
+            }
+
+            elapsed += Time.unscaledDeltaTime;
+
+            float rate = duration <= 0f
+                ? 1f
+                : Mathf.Clamp01(elapsed / duration);
+
+            Color color = startColor;
+            color.a = Mathf.Lerp(startColor.a, 0f, rate);
+            image.color = color;
+
+            yield return null;
+        }
+
+        if (image != null)
+        {
+            Destroy(image.gameObject);
+        }
     }
 
-    private Camera GetRaycastCamera(string source)
+    private void EnsureDebugLayer()
     {
-        if (source == "driver")
+        if (debugLayer != null)
         {
-            return driverRaycastCamera;
+            return;
         }
 
-        if (source == "passenger")
+        if (touchSurfaceRect == null)
         {
-            return passengerRaycastCamera;
+            return;
         }
 
-        return null;
+        Transform existing = touchSurfaceRect.Find("OledTouchDebugOverlayLayer");
+
+        if (existing != null)
+        {
+            debugLayer = existing.GetComponent<RectTransform>();
+            return;
+        }
+
+        GameObject layerObject = new GameObject(
+            "OledTouchDebugOverlayLayer",
+            typeof(RectTransform)
+        );
+
+        layerObject.transform.SetParent(touchSurfaceRect, false);
+
+        debugLayer = layerObject.GetComponent<RectTransform>();
+        debugLayer.anchorMin = Vector2.zero;
+        debugLayer.anchorMax = Vector2.one;
+        debugLayer.offsetMin = Vector2.zero;
+        debugLayer.offsetMax = Vector2.zero;
+        debugLayer.pivot = new Vector2(0.5f, 0.5f);
+
+        layerObject.transform.SetAsLastSibling();
+    }
+
+    private void EnsureCircleSprite()
+    {
+        if (circleSprite != null)
+        {
+            return;
+        }
+
+        int size = 64;
+        float radius = size * 0.5f - 2f;
+        float center = (size - 1) * 0.5f;
+
+        Texture2D texture = new Texture2D(size, size, TextureFormat.RGBA32, false);
+        texture.name = "RuntimeTouchDebugCircleTexture";
+
+        for (int y = 0; y < size; y++)
+        {
+            for (int x = 0; x < size; x++)
+            {
+                float dx = x - center;
+                float dy = y - center;
+                float distance = Mathf.Sqrt(dx * dx + dy * dy);
+
+                Color color = distance <= radius
+                    ? Color.white
+                    : Color.clear;
+
+                texture.SetPixel(x, y, color);
+            }
+        }
+
+        texture.Apply();
+
+        circleSprite = Sprite.Create(
+            texture,
+            new Rect(0f, 0f, size, size),
+            new Vector2(0.5f, 0.5f),
+            100f
+        );
+
+        circleSprite.name = "RuntimeTouchDebugCircleSprite";
     }
 
     private void ResolveReferences()
@@ -531,35 +430,15 @@ public class OledTouchPointerBridge : MonoBehaviour
         }
     }
 
-    private void LogIgnoredEvent(string sourceText, string eventText, GuiEventTouchPayload payload)
-    {
-        if (!logIgnoredEvents)
-        {
-            return;
-        }
-
-        Debug.Log(
-            "[OLED Pointer] ignored event source="
-            + sourceText
-            + " event="
-            + eventText
-            + " touch=("
-            + payload.x
-            + ", "
-            + payload.y
-            + ")"
-        );
-    }
-
     private void LogOutOfVisibleArea(string sourceText, float x, float y, Rect rect)
     {
-        if (!logIgnoredEvents)
+        if (!logIgnoredTouch)
         {
             return;
         }
 
         Debug.Log(
-            "[OLED Pointer] ignored outside visible area source="
+            "[OLED Touch Debug Circle] ignored outside visible area source="
             + sourceText
             + " converted=("
             + x.ToString("0.###")
@@ -582,44 +461,5 @@ public class OledTouchPointerBridge : MonoBehaviour
         }
 
         return value.Trim().ToLowerInvariant().Replace("_", "").Replace("-", "");
-    }
-
-    private void LogPointer(string message)
-    {
-        if (!logPointerEvent)
-        {
-            return;
-        }
-
-        Debug.Log("[OLED Pointer] " + message);
-    }
-
-    private string GetObjectName(GameObject target)
-    {
-        if (target == null)
-        {
-            return "None";
-        }
-
-        return target.name;
-    }
-
-    private string GetHierarchyPath(GameObject target)
-    {
-        if (target == null)
-        {
-            return "None";
-        }
-
-        string path = target.name;
-        Transform current = target.transform.parent;
-
-        while (current != null)
-        {
-            path = current.name + "/" + path;
-            current = current.parent;
-        }
-
-        return path;
     }
 }
