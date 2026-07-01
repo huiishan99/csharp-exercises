@@ -1,465 +1,437 @@
 using System.Collections;
 using UnityEngine;
 using UnityEngine.UI;
+using UnityEngine.Video;
 
-public class OledTouchDebugOverlay : MonoBehaviour
+[DisallowMultipleComponent]
+public class DemoVideoPageView : MonoBehaviour
 {
-    [Header("Event")]
-    [SerializeField] private GuiEventDispatcher eventDispatcher;
+    [Header("References")]
+    [SerializeField] private VideoPlayer videoPlayer;
+    [SerializeField] private RawImage targetRawImage;
 
-    [Header("Canvas")]
-    [SerializeField] private Canvas displayCanvas;
-    [SerializeField] private RectTransform touchSurfaceRect;
+    [Header("Playback")]
+    [SerializeField] private bool prepareOnAwake = true;
+    [SerializeField] private bool playOnEnable = true;
+    [SerializeField] private bool restartFromBeginningOnEnable = true;
+    [SerializeField] private bool loop = true;
 
-    [Header("OLED Layout")]
-    [SerializeField] private float driverWidth = 2650f;
-    [SerializeField] private float passengerOffsetX = 2650f;
+    [Header("Reset Policy")]
+    [SerializeField] private bool stopOnDisable = true;
+    [SerializeField] private bool clearRenderTextureOnDisable = true;
+    [SerializeField] private Color clearColor = Color.black;
 
-    // 物理OLEDの高さ。Full/Semiに関係なくDisplay自体は1392。
-    [SerializeField] private float physicalDisplayHeight = 1392f;
+    [Header("Visibility")]
+    [SerializeField] private bool hideRawImageBeforePlay = true;
+    [SerializeField] private bool showRawImageAfterPlay = true;
+    [SerializeField] private float showRawImageDelaySec = 0.05f;
 
-    [SerializeField] private bool yOriginTop = true;
-    [SerializeField] private bool clampCoordinate = true;
-    [SerializeField] private bool ignoreTouchOutsideVisibleArea = true;
+    [Header("Prepare Timeout")]
+    [SerializeField] private float prepareTimeoutSec = 1.0f;
+    [SerializeField] private bool playEvenIfPrepareTimeout = true;
 
-    [Header("Touch Rotation")]
-    [SerializeField] private bool rotateDriverTouch180 = false;
-    [SerializeField] private bool rotatePassengerTouch180 = false;
+    [Header("Recovery")]
+    [SerializeField] private bool enableRuntimeRecovery = true;
+    [SerializeField] private float recoveryCheckIntervalSec = 0.5f;
+    [SerializeField] private float notPlayingRecoverDelaySec = 1.0f;
 
-    [Header("Debug Circle")]
-    [SerializeField] private bool showDebugCircle = true;
-    [SerializeField] private bool showDown = true;
-    [SerializeField] private bool showMove = false;
-    [SerializeField] private bool showUp = false;
-    [SerializeField] private float circleSize = 80f;
-    [SerializeField] private float lifeTime = 1.0f;
-    [SerializeField] private Color circleColor = new Color(1f, 0f, 0f, 0.8f);
+    [Header("Transition")]
+    [SerializeField] private bool readyForTransitionAfterPlay = true;
 
-    [Header("Log")]
-    [SerializeField] private bool logTouchPosition = true;
-    [SerializeField] private bool logIgnoredTouch = false;
+    [Header("Debug")]
+    [SerializeField] private bool logState = false;
 
-    private RectTransform debugLayer;
-    private Sprite circleSprite;
+    public bool IsReadyForTransition { get; private set; }
+
+    private Coroutine playRoutine;
+    private RenderTexture targetRenderTexture;
+
+    private bool prepareRequested;
+    private float nextRecoveryCheckTime;
+    private float notPlayingStartTime = -1f;
 
     private void Awake()
     {
         ResolveReferences();
-        EnsureDebugLayer();
-        EnsureCircleSprite();
+        SetupVideoPlayer();
+        CacheRenderTexture();
+        EnsureRenderTextureCreated();
+
+        IsReadyForTransition = false;
+
+        if (prepareOnAwake)
+        {
+            PrepareVideo();
+        }
     }
 
     private void OnEnable()
     {
         ResolveReferences();
-        EnsureDebugLayer();
-        EnsureCircleSprite();
+        SetupVideoPlayer();
+        CacheRenderTexture();
+        EnsureRenderTextureCreated();
+        AssignTextureReferences();
 
-        if (eventDispatcher != null)
+        IsReadyForTransition = false;
+        notPlayingStartTime = -1f;
+
+        if (hideRawImageBeforePlay && targetRawImage != null)
         {
-            eventDispatcher.TouchReceived -= OnTouchReceived;
-            eventDispatcher.TouchReceived += OnTouchReceived;
+            targetRawImage.enabled = false;
         }
+
+        if (playOnEnable)
+        {
+            StartPlayRoutine();
+        }
+    }
+
+    private void Update()
+    {
+        if (!enableRuntimeRecovery)
+        {
+            return;
+        }
+
+        if (!isActiveAndEnabled)
+        {
+            return;
+        }
+
+        if (videoPlayer == null)
+        {
+            return;
+        }
+
+        if (Time.unscaledTime < nextRecoveryCheckTime)
+        {
+            return;
+        }
+
+        nextRecoveryCheckTime = Time.unscaledTime + recoveryCheckIntervalSec;
+
+        if (!playOnEnable)
+        {
+            return;
+        }
+
+        if (playRoutine != null)
+        {
+            return;
+        }
+
+        if (videoPlayer.isPlaying)
+        {
+            notPlayingStartTime = -1f;
+            return;
+        }
+
+        if (notPlayingStartTime < 0f)
+        {
+            notPlayingStartTime = Time.unscaledTime;
+            return;
+        }
+
+        if (Time.unscaledTime - notPlayingStartTime < notPlayingRecoverDelaySec)
+        {
+            return;
+        }
+
+        Log("Recovery restart because VideoPlayer is not playing.");
+        notPlayingStartTime = -1f;
+        StartPlayRoutine();
     }
 
     private void OnDisable()
     {
-        if (eventDispatcher != null)
+        StopPlayRoutine();
+
+        IsReadyForTransition = false;
+        notPlayingStartTime = -1f;
+        prepareRequested = false;
+
+        if (videoPlayer != null)
         {
-            eventDispatcher.TouchReceived -= OnTouchReceived;
-        }
-    }
-
-    private void OnTouchReceived(GuiEventMessage message)
-    {
-        if (!showDebugCircle)
-        {
-            return;
-        }
-
-        if (message == null || message.TouchPayload == null)
-        {
-            return;
-        }
-
-        GuiEventTouchPayload payload = message.TouchPayload;
-
-        string sourceText = NormalizeText(payload.source);
-        string eventText = NormalizeText(payload.GetTouchEventText());
-
-        if (!ShouldShowEvent(eventText))
-        {
-            return;
-        }
-
-        if (!TryConvertToCanvasLocal(
-                payload,
-                sourceText,
-                out Vector2 canvasLocalPoint,
-                out Vector2 sourceLocalPoint,
-                out string interpretedHalf
-            ))
-        {
-            return;
-        }
-
-        if (logTouchPosition)
-        {
-            Debug.Log(
-                "[OLED Touch Debug Circle] source="
-                + sourceText
-                + " event="
-                + eventText
-                + " touch=("
-                + payload.x
-                + ", "
-                + payload.y
-                + ") sourceLocal="
-                + sourceLocalPoint
-                + " canvasLocal="
-                + canvasLocalPoint
-                + " interpretedHalf="
-                + interpretedHalf
-                + " rectWidth="
-                + touchSurfaceRect.rect.width
-                + " rectHeight="
-                + touchSurfaceRect.rect.height
-                + " physicalHeight="
-                + physicalDisplayHeight
-            );
-        }
-
-        ShowCircle(canvasLocalPoint);
-    }
-
-    private bool ShouldShowEvent(string eventText)
-    {
-        if (eventText == "down")
-        {
-            return showDown;
-        }
-
-        if (eventText == "move")
-        {
-            return showMove;
-        }
-
-        if (eventText == "up")
-        {
-            return showUp;
-        }
-
-        return true;
-    }
-
-    private bool TryConvertToCanvasLocal(
-        GuiEventTouchPayload payload,
-        string normalizedSource,
-        out Vector2 canvasLocalPoint,
-        out Vector2 sourceLocalPoint,
-        out string interpretedHalf
-    )
-    {
-        canvasLocalPoint = Vector2.zero;
-        sourceLocalPoint = Vector2.zero;
-        interpretedHalf = "Unknown";
-
-        if (touchSurfaceRect == null)
-        {
-            Debug.LogWarning("[OLED Touch Debug Circle] Touch Surface Rect is not assigned.");
-            return false;
-        }
-
-        Rect rect = touchSurfaceRect.rect;
-
-        float x = payload.x;
-        float y = payload.y;
-
-        // まず物理Display座標としてClampする。
-        // Semi時でもTouch入力は物理Display基準で来る可能性があるため、
-        // ここではrect.height(720)ではなくphysicalDisplayHeight(1392)を使う。
-        if (clampCoordinate)
-        {
-            x = Mathf.Clamp(x, 0f, driverWidth);
-            y = Mathf.Clamp(y, 0f, physicalDisplayHeight);
-        }
-
-        ApplyTouchRotationIfNeeded(normalizedSource, ref x, ref y);
-
-        if (ignoreTouchOutsideVisibleArea)
-        {
-            if (x < 0f || x > driverWidth)
+            if (stopOnDisable)
             {
-                LogOutOfVisibleArea(normalizedSource, x, y, rect);
-                return false;
+                videoPlayer.Stop();
             }
-
-            if (y < 0f || y > rect.height)
+            else
             {
-                LogOutOfVisibleArea(normalizedSource, x, y, rect);
-                return false;
+                videoPlayer.Pause();
             }
         }
-        else if (clampCoordinate)
+
+        if (targetRawImage != null)
         {
-            x = Mathf.Clamp(x, 0f, driverWidth);
-            y = Mathf.Clamp(y, 0f, rect.height);
+            targetRawImage.enabled = false;
         }
 
-        float globalX = x;
-
-        if (normalizedSource == "passenger")
+        if (clearRenderTextureOnDisable)
         {
-            globalX = passengerOffsetX + x;
+            ClearRenderTexture();
         }
-        else if (normalizedSource != "driver")
-        {
-            Debug.LogWarning("[OLED Touch Debug Circle] Unknown source: " + payload.source);
-            return false;
-        }
-
-        float canvasLocalX = rect.xMin + globalX;
-        float canvasLocalY = yOriginTop
-            ? rect.yMax - y
-            : rect.yMin + y;
-
-        canvasLocalPoint = new Vector2(canvasLocalX, canvasLocalY);
-        sourceLocalPoint = new Vector2(x, canvasLocalY);
-
-        interpretedHalf = canvasLocalX < 0f
-            ? "DriverHalf"
-            : "PassengerHalf";
-
-        return true;
     }
 
-    private void ApplyTouchRotationIfNeeded(
-        string normalizedSource,
-        ref float x,
-        ref float y
-    )
+    private void OnDestroy()
     {
-        bool shouldRotate = false;
-
-        if (normalizedSource == "driver")
+        if (videoPlayer != null)
         {
-            shouldRotate = rotateDriverTouch180;
+            videoPlayer.prepareCompleted -= OnPrepareCompleted;
+            videoPlayer.errorReceived -= OnVideoErrorReceived;
         }
-        else if (normalizedSource == "passenger")
-        {
-            shouldRotate = rotatePassengerTouch180;
-        }
+    }
 
-        if (!shouldRotate)
+    public void PrepareVideo()
+    {
+        if (videoPlayer == null)
         {
             return;
         }
 
-        // 180度回転は物理Display全体を基準にする。
-        // Semi時のrect.height=720を使うと、Touchだけ上側に残る。
-        x = driverWidth - x;
-        y = physicalDisplayHeight - y;
-    }
-
-    private void ShowCircle(Vector2 canvasLocalPoint)
-    {
-        EnsureDebugLayer();
-        EnsureCircleSprite();
-
-        if (debugLayer == null || circleSprite == null)
+        if (videoPlayer.isPrepared)
         {
             return;
         }
 
-        GameObject circleObject = new GameObject(
-            "TouchDebugCircle",
-            typeof(RectTransform),
-            typeof(CanvasRenderer),
-            typeof(Image)
-        );
+        if (prepareRequested)
+        {
+            return;
+        }
 
-        circleObject.transform.SetParent(debugLayer, false);
+        prepareRequested = true;
+        videoPlayer.Prepare();
 
-        RectTransform rectTransform = circleObject.GetComponent<RectTransform>();
-        rectTransform.anchorMin = new Vector2(0.5f, 0.5f);
-        rectTransform.anchorMax = new Vector2(0.5f, 0.5f);
-        rectTransform.pivot = new Vector2(0.5f, 0.5f);
-        rectTransform.sizeDelta = new Vector2(circleSize, circleSize);
-        rectTransform.anchoredPosition = canvasLocalPoint;
-
-        Image image = circleObject.GetComponent<Image>();
-        image.sprite = circleSprite;
-        image.color = circleColor;
-        image.raycastTarget = false;
-
-        circleObject.transform.SetAsLastSibling();
-
-        StartCoroutine(FadeAndDestroy(image, lifeTime));
+        Log("Prepare requested.");
     }
 
-    private IEnumerator FadeAndDestroy(Image image, float duration)
+    public void ReplayFromBeginning()
     {
-        if (image == null)
+        StartPlayRoutine();
+    }
+
+    private void StartPlayRoutine()
+    {
+        StopPlayRoutine();
+        playRoutine = StartCoroutine(PlayRoutine());
+    }
+
+    private void StopPlayRoutine()
+    {
+        if (playRoutine == null)
+        {
+            return;
+        }
+
+        StopCoroutine(playRoutine);
+        playRoutine = null;
+    }
+
+    private IEnumerator PlayRoutine()
+    {
+        if (videoPlayer == null)
         {
             yield break;
         }
 
-        float elapsed = 0f;
-        Color startColor = image.color;
+        ResolveReferences();
+        SetupVideoPlayer();
+        CacheRenderTexture();
+        EnsureRenderTextureCreated();
+        AssignTextureReferences();
 
-        while (elapsed < duration)
+        if (!videoPlayer.isPrepared)
         {
-            if (image == null)
+            prepareRequested = false;
+            PrepareVideo();
+
+            float waitStart = Time.unscaledTime;
+
+            while (videoPlayer != null && !videoPlayer.isPrepared)
             {
-                yield break;
+                if (Time.unscaledTime - waitStart >= prepareTimeoutSec)
+                {
+                    Log("Prepare timeout.");
+
+                    if (!playEvenIfPrepareTimeout)
+                    {
+                        playRoutine = null;
+                        yield break;
+                    }
+
+                    break;
+                }
+
+                yield return null;
             }
+        }
 
-            elapsed += Time.unscaledDeltaTime;
+        if (videoPlayer == null)
+        {
+            yield break;
+        }
 
-            float rate = duration <= 0f
-                ? 1f
-                : Mathf.Clamp01(elapsed / duration);
+        if (restartFromBeginningOnEnable)
+        {
+            TrySeekFirstFrame();
+        }
 
-            Color color = startColor;
-            color.a = Mathf.Lerp(startColor.a, 0f, rate);
-            image.color = color;
+        videoPlayer.Play();
 
+        if (showRawImageDelaySec > 0f)
+        {
+            float elapsed = 0f;
+
+            while (elapsed < showRawImageDelaySec)
+            {
+                elapsed += Time.unscaledDeltaTime;
+                yield return null;
+            }
+        }
+        else
+        {
             yield return null;
         }
 
-        if (image != null)
+        if (targetRawImage != null && showRawImageAfterPlay)
         {
-            Destroy(image.gameObject);
+            targetRawImage.enabled = true;
+        }
+
+        IsReadyForTransition = readyForTransitionAfterPlay;
+
+        Log("Play.");
+        playRoutine = null;
+    }
+
+    private void TrySeekFirstFrame()
+    {
+        if (videoPlayer == null)
+        {
+            return;
+        }
+
+        try
+        {
+            videoPlayer.time = 0;
+            videoPlayer.frame = 0;
+        }
+        catch
+        {
+            // Some video sources do not allow frame seek before play.
         }
     }
 
-    private void EnsureDebugLayer()
+    private void SetupVideoPlayer()
     {
-        if (debugLayer != null)
+        if (videoPlayer == null)
         {
             return;
         }
 
-        if (touchSurfaceRect == null)
-        {
-            return;
-        }
+        videoPlayer.playOnAwake = false;
+        videoPlayer.isLooping = loop;
 
-        Transform existing = touchSurfaceRect.Find("OledTouchDebugOverlayLayer");
+        videoPlayer.prepareCompleted -= OnPrepareCompleted;
+        videoPlayer.prepareCompleted += OnPrepareCompleted;
 
-        if (existing != null)
-        {
-            debugLayer = existing.GetComponent<RectTransform>();
-            return;
-        }
-
-        GameObject layerObject = new GameObject(
-            "OledTouchDebugOverlayLayer",
-            typeof(RectTransform)
-        );
-
-        layerObject.transform.SetParent(touchSurfaceRect, false);
-
-        debugLayer = layerObject.GetComponent<RectTransform>();
-        debugLayer.anchorMin = Vector2.zero;
-        debugLayer.anchorMax = Vector2.one;
-        debugLayer.offsetMin = Vector2.zero;
-        debugLayer.offsetMax = Vector2.zero;
-        debugLayer.pivot = new Vector2(0.5f, 0.5f);
-
-        layerObject.transform.SetAsLastSibling();
+        videoPlayer.errorReceived -= OnVideoErrorReceived;
+        videoPlayer.errorReceived += OnVideoErrorReceived;
     }
 
-    private void EnsureCircleSprite()
+    private void AssignTextureReferences()
     {
-        if (circleSprite != null)
+        if (videoPlayer != null && targetRenderTexture != null)
+        {
+            videoPlayer.targetTexture = targetRenderTexture;
+        }
+
+        if (targetRawImage != null && targetRenderTexture != null)
+        {
+            targetRawImage.texture = targetRenderTexture;
+        }
+    }
+
+    private void OnPrepareCompleted(VideoPlayer player)
+    {
+        prepareRequested = false;
+        Log("Prepare completed.");
+    }
+
+    private void OnVideoErrorReceived(VideoPlayer player, string message)
+    {
+        prepareRequested = false;
+        Debug.LogWarning("[VideoPage] Error: " + message + " object=" + gameObject.name);
+    }
+
+    private void ClearRenderTexture()
+    {
+        CacheRenderTexture();
+        EnsureRenderTextureCreated();
+
+        if (targetRenderTexture == null)
         {
             return;
         }
 
-        int size = 64;
-        float radius = size * 0.5f - 2f;
-        float center = (size - 1) * 0.5f;
+        RenderTexture previous = RenderTexture.active;
+        RenderTexture.active = targetRenderTexture;
 
-        Texture2D texture = new Texture2D(size, size, TextureFormat.RGBA32, false);
-        texture.name = "RuntimeTouchDebugCircleTexture";
+        GL.Clear(true, true, clearColor);
 
-        for (int y = 0; y < size; y++)
+        RenderTexture.active = previous;
+    }
+
+    private void CacheRenderTexture()
+    {
+        targetRenderTexture = null;
+
+        if (videoPlayer != null && videoPlayer.targetTexture != null)
         {
-            for (int x = 0; x < size; x++)
-            {
-                float dx = x - center;
-                float dy = y - center;
-                float distance = Mathf.Sqrt(dx * dx + dy * dy);
-
-                Color color = distance <= radius
-                    ? Color.white
-                    : Color.clear;
-
-                texture.SetPixel(x, y, color);
-            }
+            targetRenderTexture = videoPlayer.targetTexture;
+            return;
         }
 
-        texture.Apply();
+        if (targetRawImage != null && targetRawImage.texture is RenderTexture renderTexture)
+        {
+            targetRenderTexture = renderTexture;
+        }
+    }
 
-        circleSprite = Sprite.Create(
-            texture,
-            new Rect(0f, 0f, size, size),
-            new Vector2(0.5f, 0.5f),
-            100f
-        );
+    private void EnsureRenderTextureCreated()
+    {
+        if (targetRenderTexture == null)
+        {
+            return;
+        }
 
-        circleSprite.name = "RuntimeTouchDebugCircleSprite";
+        if (!targetRenderTexture.IsCreated())
+        {
+            targetRenderTexture.Create();
+        }
     }
 
     private void ResolveReferences()
     {
-        if (eventDispatcher == null)
+        if (videoPlayer == null)
         {
-            eventDispatcher = FindFirstObjectByType<GuiEventDispatcher>();
+            videoPlayer = GetComponentInChildren<VideoPlayer>(true);
         }
 
-        if (displayCanvas == null)
+        if (targetRawImage == null)
         {
-            displayCanvas = FindFirstObjectByType<Canvas>();
-        }
-
-        if (touchSurfaceRect == null && displayCanvas != null)
-        {
-            touchSurfaceRect = displayCanvas.GetComponent<RectTransform>();
+            targetRawImage = GetComponentInChildren<RawImage>(true);
         }
     }
 
-    private void LogOutOfVisibleArea(string sourceText, float x, float y, Rect rect)
+    private void Log(string message)
     {
-        if (!logIgnoredTouch)
+        if (!logState)
         {
             return;
         }
 
-        Debug.Log(
-            "[OLED Touch Debug Circle] ignored outside visible area source="
-            + sourceText
-            + " converted=("
-            + x.ToString("0.###")
-            + ", "
-            + y.ToString("0.###")
-            + ") visibleSize=("
-            + driverWidth.ToString("0.###")
-            + ", "
-            + rect.height.ToString("0.###")
-            + ") physicalHeight="
-            + physicalDisplayHeight.ToString("0.###")
-        );
-    }
-
-    private string NormalizeText(string value)
-    {
-        if (string.IsNullOrEmpty(value))
-        {
-            return "";
-        }
-
-        return value.Trim().ToLowerInvariant().Replace("_", "").Replace("-", "");
+        Debug.Log("[VideoPage] " + message + " object=" + gameObject.name);
     }
 }
