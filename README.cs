@@ -1,437 +1,219 @@
-using System.Collections;
+using System;
 using UnityEngine;
-using UnityEngine.UI;
-using UnityEngine.Video;
 
-[DisallowMultipleComponent]
-public class DemoVideoPageView : MonoBehaviour
+public class DemoSourcePanel : MonoBehaviour
 {
-    [Header("References")]
-    [SerializeField] private VideoPlayer videoPlayer;
-    [SerializeField] private RawImage targetRawImage;
-
-    [Header("Playback")]
-    [SerializeField] private bool prepareOnAwake = true;
-    [SerializeField] private bool playOnEnable = true;
-    [SerializeField] private bool restartFromBeginningOnEnable = true;
-    [SerializeField] private bool loop = true;
-
-    [Header("Reset Policy")]
-    [SerializeField] private bool stopOnDisable = true;
-    [SerializeField] private bool clearRenderTextureOnDisable = true;
-    [SerializeField] private Color clearColor = Color.black;
-
-    [Header("Visibility")]
-    [SerializeField] private bool hideRawImageBeforePlay = true;
-    [SerializeField] private bool showRawImageAfterPlay = true;
-    [SerializeField] private float showRawImageDelaySec = 0.05f;
-
-    [Header("Prepare Timeout")]
-    [SerializeField] private float prepareTimeoutSec = 1.0f;
-    [SerializeField] private bool playEvenIfPrepareTimeout = true;
-
-    [Header("Recovery")]
-    [SerializeField] private bool enableRuntimeRecovery = true;
-    [SerializeField] private float recoveryCheckIntervalSec = 0.5f;
-    [SerializeField] private float notPlayingRecoverDelaySec = 1.0f;
-
-    [Header("Transition")]
-    [SerializeField] private bool readyForTransitionAfterPlay = true;
-
-    [Header("Debug")]
-    [SerializeField] private bool logState = false;
-
-    public bool IsReadyForTransition { get; private set; }
-
-    private Coroutine playRoutine;
-    private RenderTexture targetRenderTexture;
-
-    private bool prepareRequested;
-    private float nextRecoveryCheckTime;
-    private float notPlayingStartTime = -1f;
-
-    private void Awake()
+    [Serializable]
+    private class SourceBinding
     {
-        ResolveReferences();
-        SetupVideoPlayer();
-        CacheRenderTexture();
-        EnsureRenderTextureCreated();
-
-        IsReadyForTransition = false;
-
-        if (prepareOnAwake)
-        {
-            PrepareVideo();
-        }
+        public DemoSourceId sourceId;
+        public DemoPageId targetPage;
+        public DemoSourceButton sourceButton;
     }
 
-    private void OnEnable()
+    [SerializeField] private DemoPageSwitcher pageSwitcher;
+    [SerializeField] private SourceBinding[] sources;
+    [SerializeField] private DemoSourceId firstFullSource = DemoSourceId.Setting;
+
+    [Header("Display Rule")]
+    [SerializeField] private bool showMusicButtonInFullMode = false;
+    [SerializeField] private bool showAnyButtonInSemiMode = false;
+
+    private DemoVehicleMode currentVehicleMode = DemoVehicleMode.Parking;
+    private DemoSourceId selectedFullSource;
+
+    public DemoSourceId CurrentFullSource
     {
-        ResolveReferences();
-        SetupVideoPlayer();
-        CacheRenderTexture();
-        EnsureRenderTextureCreated();
-        AssignTextureReferences();
-
-        IsReadyForTransition = false;
-        notPlayingStartTime = -1f;
-
-        if (hideRawImageBeforePlay && targetRawImage != null)
-        {
-            targetRawImage.enabled = false;
-        }
-
-        if (playOnEnable)
-        {
-            StartPlayRoutine();
-        }
+        get { return selectedFullSource; }
     }
 
-    private void Update()
+    private void Start()
     {
-        if (!enableRuntimeRecovery)
-        {
-            return;
-        }
-
-        if (!isActiveAndEnabled)
-        {
-            return;
-        }
-
-        if (videoPlayer == null)
-        {
-            return;
-        }
-
-        if (Time.unscaledTime < nextRecoveryCheckTime)
-        {
-            return;
-        }
-
-        nextRecoveryCheckTime = Time.unscaledTime + recoveryCheckIntervalSec;
-
-        if (!playOnEnable)
-        {
-            return;
-        }
-
-        if (playRoutine != null)
-        {
-            return;
-        }
-
-        if (videoPlayer.isPlaying)
-        {
-            notPlayingStartTime = -1f;
-            return;
-        }
-
-        if (notPlayingStartTime < 0f)
-        {
-            notPlayingStartTime = Time.unscaledTime;
-            return;
-        }
-
-        if (Time.unscaledTime - notPlayingStartTime < notPlayingRecoverDelaySec)
-        {
-            return;
-        }
-
-        Log("Recovery restart because VideoPlayer is not playing.");
-        notPlayingStartTime = -1f;
-        StartPlayRoutine();
+        selectedFullSource = NormalizeFullSource(firstFullSource);
+        RegisterButtonEvents();
+        RefreshButtons();
     }
 
-    private void OnDisable()
+    private void RegisterButtonEvents()
     {
-        StopPlayRoutine();
-
-        IsReadyForTransition = false;
-        notPlayingStartTime = -1f;
-        prepareRequested = false;
-
-        if (videoPlayer != null)
+        if (sources == null)
         {
-            if (stopOnDisable)
+            return;
+        }
+
+        for (int i = 0; i < sources.Length; i++)
+        {
+            SourceBinding binding = sources[i];
+
+            if (binding == null || binding.sourceButton == null)
             {
-                videoPlayer.Stop();
+                continue;
+            }
+
+            SourceBinding capturedBinding = binding;
+            binding.sourceButton.Button.onClick.AddListener(() => OnSourceClicked(capturedBinding));
+        }
+    }
+
+    public void ApplyVehicleMode(DemoVehicleMode vehicleMode)
+    {
+        currentVehicleMode = vehicleMode;
+        RefreshButtons();
+    }
+
+    public void ResetFullSource(DemoSourceId sourceId)
+    {
+        selectedFullSource = NormalizeFullSource(sourceId);
+        RefreshButtons();
+    }
+
+    public void SetFullSource(DemoSourceId sourceId, bool showTargetPage)
+    {
+        DemoSourceId normalizedSource = NormalizeFullSource(sourceId);
+
+        selectedFullSource = normalizedSource;
+
+        if (showTargetPage && pageSwitcher != null)
+        {
+            pageSwitcher.ShowPage(GetTargetPage(normalizedSource));
+        }
+
+        RefreshButtons();
+    }
+
+    public void ShowCurrentFullSource()
+    {
+        selectedFullSource = NormalizeFullSource(selectedFullSource);
+
+        if (pageSwitcher != null)
+        {
+            pageSwitcher.ShowPage(GetTargetPage(selectedFullSource));
+        }
+
+        RefreshButtons();
+    }
+
+    private void OnSourceClicked(SourceBinding binding)
+    {
+        if (binding == null)
+        {
+            return;
+        }
+
+        if (currentVehicleMode != DemoVehicleMode.Parking)
+        {
+            return;
+        }
+
+        if (binding.sourceId == DemoSourceId.Music)
+        {
+            return;
+        }
+
+        if (binding.sourceId == selectedFullSource)
+        {
+            return;
+        }
+
+        selectedFullSource = NormalizeFullSource(binding.sourceId);
+
+        if (pageSwitcher != null)
+        {
+            pageSwitcher.ShowPage(binding.targetPage);
+        }
+
+        RefreshButtons();
+    }
+
+    private DemoPageId GetTargetPage(DemoSourceId sourceId)
+    {
+        if (sources == null)
+        {
+            return DemoPageId.LightingColorChange;
+        }
+
+        for (int i = 0; i < sources.Length; i++)
+        {
+            SourceBinding binding = sources[i];
+
+            if (binding == null)
+            {
+                continue;
+            }
+
+            if (binding.sourceId == sourceId)
+            {
+                return binding.targetPage;
+            }
+        }
+
+        return DemoPageId.LightingColorChange;
+    }
+
+    private void RefreshButtons()
+    {
+        if (sources == null)
+        {
+            return;
+        }
+
+        bool isParking = currentVehicleMode == DemoVehicleMode.Parking;
+
+        for (int i = 0; i < sources.Length; i++)
+        {
+            SourceBinding binding = sources[i];
+
+            if (binding == null || binding.sourceButton == null)
+            {
+                continue;
+            }
+
+            if (isParking)
+            {
+                ApplyFullModeState(binding);
             }
             else
             {
-                videoPlayer.Pause();
+                ApplySemiModeState(binding);
             }
         }
-
-        if (targetRawImage != null)
-        {
-            targetRawImage.enabled = false;
-        }
-
-        if (clearRenderTextureOnDisable)
-        {
-            ClearRenderTexture();
-        }
     }
 
-    private void OnDestroy()
+    private void ApplyFullModeState(SourceBinding binding)
     {
-        if (videoPlayer != null)
-        {
-            videoPlayer.prepareCompleted -= OnPrepareCompleted;
-            videoPlayer.errorReceived -= OnVideoErrorReceived;
-        }
-    }
+        bool isMusic = binding.sourceId == DemoSourceId.Music;
 
-    public void PrepareVideo()
-    {
-        if (videoPlayer == null)
+        if (isMusic && !showMusicButtonInFullMode)
         {
+            binding.sourceButton.SetVisible(false);
             return;
         }
 
-        if (videoPlayer.isPrepared)
+        bool isSelected = binding.sourceId == selectedFullSource && !isMusic;
+        bool isClickable = !isMusic && !isSelected;
+
+        binding.sourceButton.SetVisible(true);
+        binding.sourceButton.SetState(isSelected, isClickable);
+    }
+
+    private void ApplySemiModeState(SourceBinding binding)
+    {
+        if (!showAnyButtonInSemiMode)
         {
+            binding.sourceButton.SetVisible(false);
             return;
         }
 
-        if (prepareRequested)
-        {
-            return;
-        }
-
-        prepareRequested = true;
-        videoPlayer.Prepare();
-
-        Log("Prepare requested.");
+        binding.sourceButton.SetVisible(false);
     }
 
-    public void ReplayFromBeginning()
+    private DemoSourceId NormalizeFullSource(DemoSourceId sourceId)
     {
-        StartPlayRoutine();
-    }
-
-    private void StartPlayRoutine()
-    {
-        StopPlayRoutine();
-        playRoutine = StartCoroutine(PlayRoutine());
-    }
-
-    private void StopPlayRoutine()
-    {
-        if (playRoutine == null)
+        if (sourceId == DemoSourceId.Music)
         {
-            return;
+            return DemoSourceId.Setting;
         }
 
-        StopCoroutine(playRoutine);
-        playRoutine = null;
-    }
-
-    private IEnumerator PlayRoutine()
-    {
-        if (videoPlayer == null)
-        {
-            yield break;
-        }
-
-        ResolveReferences();
-        SetupVideoPlayer();
-        CacheRenderTexture();
-        EnsureRenderTextureCreated();
-        AssignTextureReferences();
-
-        if (!videoPlayer.isPrepared)
-        {
-            prepareRequested = false;
-            PrepareVideo();
-
-            float waitStart = Time.unscaledTime;
-
-            while (videoPlayer != null && !videoPlayer.isPrepared)
-            {
-                if (Time.unscaledTime - waitStart >= prepareTimeoutSec)
-                {
-                    Log("Prepare timeout.");
-
-                    if (!playEvenIfPrepareTimeout)
-                    {
-                        playRoutine = null;
-                        yield break;
-                    }
-
-                    break;
-                }
-
-                yield return null;
-            }
-        }
-
-        if (videoPlayer == null)
-        {
-            yield break;
-        }
-
-        if (restartFromBeginningOnEnable)
-        {
-            TrySeekFirstFrame();
-        }
-
-        videoPlayer.Play();
-
-        if (showRawImageDelaySec > 0f)
-        {
-            float elapsed = 0f;
-
-            while (elapsed < showRawImageDelaySec)
-            {
-                elapsed += Time.unscaledDeltaTime;
-                yield return null;
-            }
-        }
-        else
-        {
-            yield return null;
-        }
-
-        if (targetRawImage != null && showRawImageAfterPlay)
-        {
-            targetRawImage.enabled = true;
-        }
-
-        IsReadyForTransition = readyForTransitionAfterPlay;
-
-        Log("Play.");
-        playRoutine = null;
-    }
-
-    private void TrySeekFirstFrame()
-    {
-        if (videoPlayer == null)
-        {
-            return;
-        }
-
-        try
-        {
-            videoPlayer.time = 0;
-            videoPlayer.frame = 0;
-        }
-        catch
-        {
-            // Some video sources do not allow frame seek before play.
-        }
-    }
-
-    private void SetupVideoPlayer()
-    {
-        if (videoPlayer == null)
-        {
-            return;
-        }
-
-        videoPlayer.playOnAwake = false;
-        videoPlayer.isLooping = loop;
-
-        videoPlayer.prepareCompleted -= OnPrepareCompleted;
-        videoPlayer.prepareCompleted += OnPrepareCompleted;
-
-        videoPlayer.errorReceived -= OnVideoErrorReceived;
-        videoPlayer.errorReceived += OnVideoErrorReceived;
-    }
-
-    private void AssignTextureReferences()
-    {
-        if (videoPlayer != null && targetRenderTexture != null)
-        {
-            videoPlayer.targetTexture = targetRenderTexture;
-        }
-
-        if (targetRawImage != null && targetRenderTexture != null)
-        {
-            targetRawImage.texture = targetRenderTexture;
-        }
-    }
-
-    private void OnPrepareCompleted(VideoPlayer player)
-    {
-        prepareRequested = false;
-        Log("Prepare completed.");
-    }
-
-    private void OnVideoErrorReceived(VideoPlayer player, string message)
-    {
-        prepareRequested = false;
-        Debug.LogWarning("[VideoPage] Error: " + message + " object=" + gameObject.name);
-    }
-
-    private void ClearRenderTexture()
-    {
-        CacheRenderTexture();
-        EnsureRenderTextureCreated();
-
-        if (targetRenderTexture == null)
-        {
-            return;
-        }
-
-        RenderTexture previous = RenderTexture.active;
-        RenderTexture.active = targetRenderTexture;
-
-        GL.Clear(true, true, clearColor);
-
-        RenderTexture.active = previous;
-    }
-
-    private void CacheRenderTexture()
-    {
-        targetRenderTexture = null;
-
-        if (videoPlayer != null && videoPlayer.targetTexture != null)
-        {
-            targetRenderTexture = videoPlayer.targetTexture;
-            return;
-        }
-
-        if (targetRawImage != null && targetRawImage.texture is RenderTexture renderTexture)
-        {
-            targetRenderTexture = renderTexture;
-        }
-    }
-
-    private void EnsureRenderTextureCreated()
-    {
-        if (targetRenderTexture == null)
-        {
-            return;
-        }
-
-        if (!targetRenderTexture.IsCreated())
-        {
-            targetRenderTexture.Create();
-        }
-    }
-
-    private void ResolveReferences()
-    {
-        if (videoPlayer == null)
-        {
-            videoPlayer = GetComponentInChildren<VideoPlayer>(true);
-        }
-
-        if (targetRawImage == null)
-        {
-            targetRawImage = GetComponentInChildren<RawImage>(true);
-        }
-    }
-
-    private void Log(string message)
-    {
-        if (!logState)
-        {
-            return;
-        }
-
-        Debug.Log("[VideoPage] " + message + " object=" + gameObject.name);
+        return sourceId;
     }
 }
