@@ -1,319 +1,92 @@
-using UnityEngine;
-using UnityEngine.Video;
-
-[DisallowMultipleComponent]
-public class GuiMediaVolumeController : MonoBehaviour
+public static class GuiEventType
 {
-    [Header("Event")]
-    [SerializeField] private GuiEventDispatcher eventDispatcher;
+    public const string IgOn = "EVT_IG_ON";
+    public const string IgOff = "EVT_IG_OFF";
 
-    [Header("Config")]
-    [SerializeField] private bool useJsonConfig = true;
+    public const string IgOnShort = "IG_ON";
+    public const string IgOffShort = "IG_OFF";
 
-    // 外部絶対Pathも指定可能。
-    // 例: %USERPROFILE%\Desktop\backend_ver19\config\media_volume_config.json
-    [SerializeField] private string configPath =
-        "%USERPROFILE%\\Desktop\\backend_ver19\\config\\media_volume_config.json";
+    public const string ShifterChanged = "EVT_SHIFTER_CHANGED";
 
-    [SerializeField] private bool loadConfigOnEnable = true;
+    public const string HvacPopup = "EVT_HVAC_POPUP";
+    public const string HvacDisplayModeResult = "EVT_HVAC_DISPLAY_MODE_RESULT";
 
-    [Header("Targets")]
-    [SerializeField] private VideoPlayer[] targetVideoPlayers;
-    [SerializeField] private AudioSource[] targetAudioSources;
+    public const string MediaVolumeUp = "EVT_MEDIA_VOLUME_UP";
+    public const string MediaVolumeDown = "EVT_MEDIA_VOLUME_DOWN";
 
-    [Header("Auto Find VideoPlayers")]
-    [SerializeField] private bool autoFindVideoPlayersOnAwake = true;
-    [SerializeField] private bool includeInactiveVideoPlayers = true;
+    // Backend内部処理用のSound Volume signal。
+    // GUI media volumeとは分けて扱う。
+    public const string AudioVolumeUpSignal = "SIG_AUDIO_VOLUME_UP";
+    public const string AudioVolumeDownSignal = "SIG_AUDIO_VOLUME_DOWN";
 
-    [Header("Auto Find AudioSources")]
-    [Tooltip("Opening/Closing/HVACなどのAudioSourceを拾いやすいため、通常はfalse。")]
-    [SerializeField] private bool autoFindAudioSourcesOnAwake = false;
-    [SerializeField] private bool includeInactiveAudioSources = true;
+    public const string SoundVolumeUpSignal = "SIG_SOUND_VOLUME_UP";
+    public const string SoundVolumeDownSignal = "SIG_SOUND_VOLUME_DOWN";
 
-    [Header("VideoPlayer Audio Track")]
-    [SerializeField] private ushort directAudioTrackIndex = 0;
+    public const string LedSubToggleColor = "SIG_LED_SUB_TOGGLE_COLOR";
+    public const string LedSubTogglePattern = "SIG_LED_SUB_TOGGLE_PATTERN";
 
-    [Header("Behavior")]
-    [SerializeField] private bool applyDefaultVolumeOnStart = true;
-    [SerializeField] private bool applyVolumeOnEnable = true;
-    [SerializeField] private bool reloadConfigOnManualReload = true;
+    public const string Touch = "EVT_TOUCH";
 
-    [Header("Debug")]
-    [SerializeField] private bool logVolume = true;
+    public const string CloseModeStatus = "close_mode_sts";
+    public const string HalfModeStatus = "half_mode_sts";
+    public const string FullModeStatus = "full_mode_sts";
+    public const string OtherModeStatus = "other_mode_sts";
 
-    private MediaVolumeConfig config;
-    private float currentVolume = 0.4f;
-
-    public float CurrentVolume
+    public static bool EqualsType(string actual, string expected)
     {
-        get { return currentVolume; }
+        if (string.IsNullOrEmpty(actual) || string.IsNullOrEmpty(expected))
+        {
+            return false;
+        }
+
+        return actual.Trim().ToLowerInvariant() == expected.Trim().ToLowerInvariant();
     }
 
-    private void Awake()
+    public static bool IsIgOn(string messageType)
     {
-        ResolveReferences();
-
-        if (autoFindVideoPlayersOnAwake)
-        {
-            RefreshVideoPlayerTargets();
-        }
-
-        if (autoFindAudioSourcesOnAwake)
-        {
-            RefreshAudioSourceTargets();
-        }
-
-        LoadConfig();
-
-        if (applyDefaultVolumeOnStart)
-        {
-            SetVolume(config.@default, "StartDefault");
-        }
+        return EqualsType(messageType, IgOn)
+            || EqualsType(messageType, IgOnShort);
     }
 
-    private void OnEnable()
+    public static bool IsIgOff(string messageType)
     {
-        ResolveReferences();
-
-        if (loadConfigOnEnable)
-        {
-            LoadConfig();
-        }
-
-        if (applyVolumeOnEnable)
-        {
-            SetVolume(currentVolume, "OnEnable");
-        }
-
-        SubscribeEvents();
+        return EqualsType(messageType, IgOff)
+            || EqualsType(messageType, IgOffShort);
     }
 
-    private void OnDisable()
+    public static bool IsMediaVolumeUp(string messageType)
     {
-        UnsubscribeEvents();
+        return EqualsType(messageType, MediaVolumeUp);
     }
 
-    [ContextMenu("Reload Media Volume Config")]
-    public void ReloadConfig()
+    public static bool IsMediaVolumeDown(string messageType)
     {
-        if (!reloadConfigOnManualReload)
-        {
-            return;
-        }
-
-        LoadConfig();
-        SetVolume(currentVolume, "ReloadConfigClamp");
+        return EqualsType(messageType, MediaVolumeDown);
     }
 
-    [ContextMenu("Refresh VideoPlayer Targets")]
-    public void RefreshVideoPlayerTargets()
+    public static bool IsSoundVolumeUpSignal(string messageType)
     {
-        FindObjectsInactive inactiveMode = includeInactiveVideoPlayers
-            ? FindObjectsInactive.Include
-            : FindObjectsInactive.Exclude;
-
-        targetVideoPlayers = FindObjectsByType<VideoPlayer>(
-            inactiveMode,
-            FindObjectsSortMode.None
-        );
+        return EqualsType(messageType, AudioVolumeUpSignal)
+            || EqualsType(messageType, SoundVolumeUpSignal);
     }
 
-    [ContextMenu("Refresh AudioSource Targets")]
-    public void RefreshAudioSourceTargets()
+    public static bool IsSoundVolumeDownSignal(string messageType)
     {
-        FindObjectsInactive inactiveMode = includeInactiveAudioSources
-            ? FindObjectsInactive.Include
-            : FindObjectsInactive.Exclude;
-
-        targetAudioSources = FindObjectsByType<AudioSource>(
-            inactiveMode,
-            FindObjectsSortMode.None
-        );
+        return EqualsType(messageType, AudioVolumeDownSignal)
+            || EqualsType(messageType, SoundVolumeDownSignal);
     }
 
-    public void IncreaseVolume()
+    public static bool IsLedSubSignal(string messageType)
     {
-        EnsureConfig();
-        SetVolume(currentVolume + config.step, "EVT_MEDIA_VOLUME_UP");
+        return EqualsType(messageType, LedSubToggleColor)
+            || EqualsType(messageType, LedSubTogglePattern);
     }
 
-    public void DecreaseVolume()
+    public static bool IsMechaStatus(string messageType)
     {
-        EnsureConfig();
-        SetVolume(currentVolume - config.step, "EVT_MEDIA_VOLUME_DOWN");
-    }
-
-    public void SetVolume(float value, string reason)
-    {
-        EnsureConfig();
-
-        float nextVolume = Mathf.Clamp(value, config.min, config.max);
-        currentVolume = nextVolume;
-
-        ApplyVolumeToTargets();
-
-        if (logVolume)
-        {
-            Debug.Log(
-                "[MediaVolume] volume="
-                + currentVolume.ToString("0.###")
-                + " reason="
-                + reason
-                + " range="
-                + config.min.ToString("0.###")
-                + "-"
-                + config.max.ToString("0.###")
-                + " step="
-                + config.step.ToString("0.###")
-            );
-        }
-    }
-
-    private void ApplyVolumeToTargets()
-    {
-        ApplyVolumeToVideoPlayers();
-        ApplyVolumeToAudioSources();
-    }
-
-    private void ApplyVolumeToVideoPlayers()
-    {
-        if (targetVideoPlayers == null)
-        {
-            return;
-        }
-
-        for (int i = 0; i < targetVideoPlayers.Length; i++)
-        {
-            VideoPlayer videoPlayer = targetVideoPlayers[i];
-
-            if (videoPlayer == null)
-            {
-                continue;
-            }
-
-            ApplyVolumeToVideoPlayer(videoPlayer);
-        }
-    }
-
-    private void ApplyVolumeToVideoPlayer(VideoPlayer videoPlayer)
-    {
-        if (videoPlayer == null)
-        {
-            return;
-        }
-
-        try
-        {
-            if (videoPlayer.audioOutputMode == VideoAudioOutputMode.Direct)
-            {
-                videoPlayer.SetDirectAudioVolume(directAudioTrackIndex, currentVolume);
-                return;
-            }
-        }
-        catch
-        {
-            // Track未設定などの場合はAudioSource側にfallbackする。
-        }
-
-        try
-        {
-            AudioSource source = videoPlayer.GetTargetAudioSource(directAudioTrackIndex);
-
-            if (source != null)
-            {
-                source.volume = currentVolume;
-            }
-        }
-        catch
-        {
-            // AudioSource未設定の場合は何もしない。
-        }
-    }
-
-    private void ApplyVolumeToAudioSources()
-    {
-        if (targetAudioSources == null)
-        {
-            return;
-        }
-
-        for (int i = 0; i < targetAudioSources.Length; i++)
-        {
-            AudioSource source = targetAudioSources[i];
-
-            if (source == null)
-            {
-                continue;
-            }
-
-            source.volume = currentVolume;
-        }
-    }
-
-    private void SubscribeEvents()
-    {
-        if (eventDispatcher == null)
-        {
-            return;
-        }
-
-        eventDispatcher.MediaVolumeUpReceived -= OnMediaVolumeUpReceived;
-        eventDispatcher.MediaVolumeDownReceived -= OnMediaVolumeDownReceived;
-
-        eventDispatcher.MediaVolumeUpReceived += OnMediaVolumeUpReceived;
-        eventDispatcher.MediaVolumeDownReceived += OnMediaVolumeDownReceived;
-    }
-
-    private void UnsubscribeEvents()
-    {
-        if (eventDispatcher == null)
-        {
-            return;
-        }
-
-        eventDispatcher.MediaVolumeUpReceived -= OnMediaVolumeUpReceived;
-        eventDispatcher.MediaVolumeDownReceived -= OnMediaVolumeDownReceived;
-    }
-
-    private void OnMediaVolumeUpReceived(GuiEventMessage message)
-    {
-        IncreaseVolume();
-    }
-
-    private void OnMediaVolumeDownReceived(GuiEventMessage message)
-    {
-        DecreaseVolume();
-    }
-
-    private void LoadConfig()
-    {
-        if (useJsonConfig)
-        {
-            config = MediaVolumeConfigLoader.Load(configPath);
-        }
-        else
-        {
-            config = MediaVolumeConfig.CreateDefault();
-        }
-
-        currentVolume = Mathf.Clamp(currentVolume, config.min, config.max);
-    }
-
-    private void EnsureConfig()
-    {
-        if (config != null)
-        {
-            return;
-        }
-
-        LoadConfig();
-    }
-
-    private void ResolveReferences()
-    {
-        if (eventDispatcher == null)
-        {
-            eventDispatcher = FindFirstObjectByType<GuiEventDispatcher>();
-        }
+        return EqualsType(messageType, CloseModeStatus)
+            || EqualsType(messageType, HalfModeStatus)
+            || EqualsType(messageType, FullModeStatus)
+            || EqualsType(messageType, OtherModeStatus);
     }
 }
