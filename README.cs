@@ -1,92 +1,142 @@
-public static class GuiEventType
+using System;
+using UnityEngine;
+
+public class GuiEventDispatcher : MonoBehaviour
 {
-    public const string IgOn = "EVT_IG_ON";
-    public const string IgOff = "EVT_IG_OFF";
+    [SerializeField] private bool logRawJson = true;
+    [SerializeField] private bool logParsedEvent = true;
 
-    public const string IgOnShort = "IG_ON";
-    public const string IgOffShort = "IG_OFF";
+    public event Action<GuiEventMessage> AnyEventReceived;
 
-    public const string ShifterChanged = "EVT_SHIFTER_CHANGED";
+    public event Action<GuiEventMessage> IgOnReceived;
+    public event Action<GuiEventMessage> IgOffReceived;
 
-    public const string HvacPopup = "EVT_HVAC_POPUP";
-    public const string HvacDisplayModeResult = "EVT_HVAC_DISPLAY_MODE_RESULT";
+    public event Action<GuiEventMessage> ShifterChangedReceived;
 
-    public const string MediaVolumeUp = "EVT_MEDIA_VOLUME_UP";
-    public const string MediaVolumeDown = "EVT_MEDIA_VOLUME_DOWN";
+    public event Action<GuiEventMessage> HvacPopupReceived;
+    public event Action<GuiEventMessage> HvacResultReceived;
 
-    // Backend内部処理用のSound Volume signal。
-    // GUI media volumeとは分けて扱う。
-    public const string AudioVolumeUpSignal = "SIG_AUDIO_VOLUME_UP";
-    public const string AudioVolumeDownSignal = "SIG_AUDIO_VOLUME_DOWN";
+    public event Action<GuiEventMessage> MediaVolumeUpReceived;
+    public event Action<GuiEventMessage> MediaVolumeDownReceived;
 
-    public const string SoundVolumeUpSignal = "SIG_SOUND_VOLUME_UP";
-    public const string SoundVolumeDownSignal = "SIG_SOUND_VOLUME_DOWN";
+    public event Action<GuiEventMessage> SoundVolumeUpSignalReceived;
+    public event Action<GuiEventMessage> SoundVolumeDownSignalReceived;
 
-    public const string LedSubToggleColor = "SIG_LED_SUB_TOGGLE_COLOR";
-    public const string LedSubTogglePattern = "SIG_LED_SUB_TOGGLE_PATTERN";
+    public event Action<GuiEventMessage> TouchReceived;
+    public event Action<GuiEventMessage> MechaStatusReceived;
 
-    public const string Touch = "EVT_TOUCH";
+    public event Action<GuiEventMessage> LedSubSignalReceived;
+    public event Action<GuiEventMessage> UnknownEventReceived;
 
-    public const string CloseModeStatus = "close_mode_sts";
-    public const string HalfModeStatus = "half_mode_sts";
-    public const string FullModeStatus = "full_mode_sts";
-    public const string OtherModeStatus = "other_mode_sts";
-
-    public static bool EqualsType(string actual, string expected)
+    public void ReceiveRawJson(string rawJson)
     {
-        if (string.IsNullOrEmpty(actual) || string.IsNullOrEmpty(expected))
+        if (logRawJson)
         {
-            return false;
+            Debug.Log("[GUI EVT Raw] " + rawJson);
         }
 
-        return actual.Trim().ToLowerInvariant() == expected.Trim().ToLowerInvariant();
+        if (!GuiEventJsonParser.TryParse(
+                rawJson,
+                out GuiEventMessage message,
+                out string errorMessage
+            ))
+        {
+            Debug.LogWarning("[GUI EVT] Parse failed: " + errorMessage + " | Raw: " + rawJson);
+            return;
+        }
+
+        Dispatch(message);
     }
 
-    public static bool IsIgOn(string messageType)
+    private void Dispatch(GuiEventMessage message)
     {
-        return EqualsType(messageType, IgOn)
-            || EqualsType(messageType, IgOnShort);
-    }
+        if (message == null)
+        {
+            return;
+        }
 
-    public static bool IsIgOff(string messageType)
-    {
-        return EqualsType(messageType, IgOff)
-            || EqualsType(messageType, IgOffShort);
-    }
+        if (logParsedEvent)
+        {
+            Debug.Log("[GUI EVT] " + message.MessageType);
+        }
 
-    public static bool IsMediaVolumeUp(string messageType)
-    {
-        return EqualsType(messageType, MediaVolumeUp);
-    }
+        AnyEventReceived?.Invoke(message);
 
-    public static bool IsMediaVolumeDown(string messageType)
-    {
-        return EqualsType(messageType, MediaVolumeDown);
-    }
+        if (GuiEventType.IsIgOn(message.MessageType))
+        {
+            IgOnReceived?.Invoke(message);
+            return;
+        }
 
-    public static bool IsSoundVolumeUpSignal(string messageType)
-    {
-        return EqualsType(messageType, AudioVolumeUpSignal)
-            || EqualsType(messageType, SoundVolumeUpSignal);
-    }
+        if (GuiEventType.IsIgOff(message.MessageType))
+        {
+            IgOffReceived?.Invoke(message);
+            return;
+        }
 
-    public static bool IsSoundVolumeDownSignal(string messageType)
-    {
-        return EqualsType(messageType, AudioVolumeDownSignal)
-            || EqualsType(messageType, SoundVolumeDownSignal);
-    }
+        if (GuiEventType.EqualsType(message.MessageType, GuiEventType.ShifterChanged))
+        {
+            ShifterChangedReceived?.Invoke(message);
+            return;
+        }
 
-    public static bool IsLedSubSignal(string messageType)
-    {
-        return EqualsType(messageType, LedSubToggleColor)
-            || EqualsType(messageType, LedSubTogglePattern);
-    }
+        if (GuiEventType.EqualsType(message.MessageType, GuiEventType.HvacPopup))
+        {
+            HvacPopupReceived?.Invoke(message);
+            return;
+        }
 
-    public static bool IsMechaStatus(string messageType)
-    {
-        return EqualsType(messageType, CloseModeStatus)
-            || EqualsType(messageType, HalfModeStatus)
-            || EqualsType(messageType, FullModeStatus)
-            || EqualsType(messageType, OtherModeStatus);
+        if (GuiEventType.EqualsType(message.MessageType, GuiEventType.HvacDisplayModeResult))
+        {
+            HvacResultReceived?.Invoke(message);
+            return;
+        }
+
+        if (GuiEventType.IsMediaVolumeUp(message.MessageType))
+        {
+            MediaVolumeUpReceived?.Invoke(message);
+            return;
+        }
+
+        if (GuiEventType.IsMediaVolumeDown(message.MessageType))
+        {
+            MediaVolumeDownReceived?.Invoke(message);
+            return;
+        }
+
+        if (GuiEventType.IsSoundVolumeUpSignal(message.MessageType))
+        {
+            Debug.Log("[GUI EVT] Sound volume signal received. GUI does not handle media volume with this signal: " + message.MessageType);
+            SoundVolumeUpSignalReceived?.Invoke(message);
+            return;
+        }
+
+        if (GuiEventType.IsSoundVolumeDownSignal(message.MessageType))
+        {
+            Debug.Log("[GUI EVT] Sound volume signal received. GUI does not handle media volume with this signal: " + message.MessageType);
+            SoundVolumeDownSignalReceived?.Invoke(message);
+            return;
+        }
+
+        if (GuiEventType.EqualsType(message.MessageType, GuiEventType.Touch))
+        {
+            TouchReceived?.Invoke(message);
+            return;
+        }
+
+        if (GuiEventType.IsMechaStatus(message.MessageType))
+        {
+            MechaStatusReceived?.Invoke(message);
+            return;
+        }
+
+        if (GuiEventType.IsLedSubSignal(message.MessageType))
+        {
+            Debug.Log("[GUI EVT] LED Sub signal received: " + message.MessageType);
+            LedSubSignalReceived?.Invoke(message);
+            return;
+        }
+
+        UnknownEventReceived?.Invoke(message);
     }
 }
