@@ -1,148 +1,319 @@
-using System;
-using System.IO;
-using System.Text;
 using UnityEngine;
+using UnityEngine.Video;
 
-public static class MediaVolumeConfigLoader
+[DisallowMultipleComponent]
+public class GuiMediaVolumeController : MonoBehaviour
 {
-    [Serializable]
-    private class MediaVolumeConfigRoot
+    [Header("Event")]
+    [SerializeField] private GuiEventDispatcher eventDispatcher;
+
+    [Header("Config")]
+    [SerializeField] private bool useJsonConfig = true;
+
+    // 外部絶対Pathも指定可能。
+    // 例: %USERPROFILE%\Desktop\backend_ver19\config\media_volume_config.json
+    [SerializeField] private string configPath =
+        "%USERPROFILE%\\Desktop\\backend_ver19\\config\\media_volume_config.json";
+
+    [SerializeField] private bool loadConfigOnEnable = true;
+
+    [Header("Targets")]
+    [SerializeField] private VideoPlayer[] targetVideoPlayers;
+    [SerializeField] private AudioSource[] targetAudioSources;
+
+    [Header("Auto Find VideoPlayers")]
+    [SerializeField] private bool autoFindVideoPlayersOnAwake = true;
+    [SerializeField] private bool includeInactiveVideoPlayers = true;
+
+    [Header("Auto Find AudioSources")]
+    [Tooltip("Opening/Closing/HVACなどのAudioSourceを拾いやすいため、通常はfalse。")]
+    [SerializeField] private bool autoFindAudioSourcesOnAwake = false;
+    [SerializeField] private bool includeInactiveAudioSources = true;
+
+    [Header("VideoPlayer Audio Track")]
+    [SerializeField] private ushort directAudioTrackIndex = 0;
+
+    [Header("Behavior")]
+    [SerializeField] private bool applyDefaultVolumeOnStart = true;
+    [SerializeField] private bool applyVolumeOnEnable = true;
+    [SerializeField] private bool reloadConfigOnManualReload = true;
+
+    [Header("Debug")]
+    [SerializeField] private bool logVolume = true;
+
+    private MediaVolumeConfig config;
+    private float currentVolume = 0.4f;
+
+    public float CurrentVolume
     {
-        public MediaVolumeConfig media_volume;
-        public MediaVolumeConfig mediaVolume;
-        public MediaVolumeConfig MediaVolume;
+        get { return currentVolume; }
     }
 
-    private const string DefaultStreamingAssetsPath =
-        "MediaVolume/media_volume_config.json";
-
-    public static MediaVolumeConfig Load(string path)
+    private void Awake()
     {
-        string fullPath = ResolveFullPath(path);
+        ResolveReferences();
 
-        if (!File.Exists(fullPath))
+        if (autoFindVideoPlayersOnAwake)
         {
-            Debug.LogWarning(
-                "[MediaVolume] Config file not found: "
-                + fullPath
-                + ". Use default config."
-            );
+            RefreshVideoPlayerTargets();
+        }
 
-            return MediaVolumeConfig.CreateDefault();
+        if (autoFindAudioSourcesOnAwake)
+        {
+            RefreshAudioSourceTargets();
+        }
+
+        LoadConfig();
+
+        if (applyDefaultVolumeOnStart)
+        {
+            SetVolume(config.@default, "StartDefault");
+        }
+    }
+
+    private void OnEnable()
+    {
+        ResolveReferences();
+
+        if (loadConfigOnEnable)
+        {
+            LoadConfig();
+        }
+
+        if (applyVolumeOnEnable)
+        {
+            SetVolume(currentVolume, "OnEnable");
+        }
+
+        SubscribeEvents();
+    }
+
+    private void OnDisable()
+    {
+        UnsubscribeEvents();
+    }
+
+    [ContextMenu("Reload Media Volume Config")]
+    public void ReloadConfig()
+    {
+        if (!reloadConfigOnManualReload)
+        {
+            return;
+        }
+
+        LoadConfig();
+        SetVolume(currentVolume, "ReloadConfigClamp");
+    }
+
+    [ContextMenu("Refresh VideoPlayer Targets")]
+    public void RefreshVideoPlayerTargets()
+    {
+        FindObjectsInactive inactiveMode = includeInactiveVideoPlayers
+            ? FindObjectsInactive.Include
+            : FindObjectsInactive.Exclude;
+
+        targetVideoPlayers = FindObjectsByType<VideoPlayer>(
+            inactiveMode,
+            FindObjectsSortMode.None
+        );
+    }
+
+    [ContextMenu("Refresh AudioSource Targets")]
+    public void RefreshAudioSourceTargets()
+    {
+        FindObjectsInactive inactiveMode = includeInactiveAudioSources
+            ? FindObjectsInactive.Include
+            : FindObjectsInactive.Exclude;
+
+        targetAudioSources = FindObjectsByType<AudioSource>(
+            inactiveMode,
+            FindObjectsSortMode.None
+        );
+    }
+
+    public void IncreaseVolume()
+    {
+        EnsureConfig();
+        SetVolume(currentVolume + config.step, "EVT_MEDIA_VOLUME_UP");
+    }
+
+    public void DecreaseVolume()
+    {
+        EnsureConfig();
+        SetVolume(currentVolume - config.step, "EVT_MEDIA_VOLUME_DOWN");
+    }
+
+    public void SetVolume(float value, string reason)
+    {
+        EnsureConfig();
+
+        float nextVolume = Mathf.Clamp(value, config.min, config.max);
+        currentVolume = nextVolume;
+
+        ApplyVolumeToTargets();
+
+        if (logVolume)
+        {
+            Debug.Log(
+                "[MediaVolume] volume="
+                + currentVolume.ToString("0.###")
+                + " reason="
+                + reason
+                + " range="
+                + config.min.ToString("0.###")
+                + "-"
+                + config.max.ToString("0.###")
+                + " step="
+                + config.step.ToString("0.###")
+            );
+        }
+    }
+
+    private void ApplyVolumeToTargets()
+    {
+        ApplyVolumeToVideoPlayers();
+        ApplyVolumeToAudioSources();
+    }
+
+    private void ApplyVolumeToVideoPlayers()
+    {
+        if (targetVideoPlayers == null)
+        {
+            return;
+        }
+
+        for (int i = 0; i < targetVideoPlayers.Length; i++)
+        {
+            VideoPlayer videoPlayer = targetVideoPlayers[i];
+
+            if (videoPlayer == null)
+            {
+                continue;
+            }
+
+            ApplyVolumeToVideoPlayer(videoPlayer);
+        }
+    }
+
+    private void ApplyVolumeToVideoPlayer(VideoPlayer videoPlayer)
+    {
+        if (videoPlayer == null)
+        {
+            return;
         }
 
         try
         {
-            string json = File.ReadAllText(fullPath, Encoding.UTF8);
-            MediaVolumeConfig config = ParseConfig(json);
-
-            if (config == null)
+            if (videoPlayer.audioOutputMode == VideoAudioOutputMode.Direct)
             {
-                Debug.LogWarning(
-                    "[MediaVolume] Failed to parse config. Use default config. path="
-                    + fullPath
-                );
-
-                return MediaVolumeConfig.CreateDefault();
+                videoPlayer.SetDirectAudioVolume(directAudioTrackIndex, currentVolume);
+                return;
             }
-
-            config.Normalize();
-
-            Debug.Log(
-                "[MediaVolume] Config loaded: "
-                + fullPath
-                + " min="
-                + config.min.ToString("0.###")
-                + " max="
-                + config.max.ToString("0.###")
-                + " default="
-                + config.@default.ToString("0.###")
-                + " step="
-                + config.step.ToString("0.###")
-            );
-
-            return config;
         }
-        catch (Exception exception)
+        catch
         {
-            Debug.LogWarning(
-                "[MediaVolume] Config load error: "
-                + exception.Message
-                + " path="
-                + fullPath
-            );
+            // Track未設定などの場合はAudioSource側にfallbackする。
+        }
 
-            return MediaVolumeConfig.CreateDefault();
+        try
+        {
+            AudioSource source = videoPlayer.GetTargetAudioSource(directAudioTrackIndex);
+
+            if (source != null)
+            {
+                source.volume = currentVolume;
+            }
+        }
+        catch
+        {
+            // AudioSource未設定の場合は何もしない。
         }
     }
 
-    private static MediaVolumeConfig ParseConfig(string json)
+    private void ApplyVolumeToAudioSources()
     {
-        if (string.IsNullOrWhiteSpace(json))
+        if (targetAudioSources == null)
         {
-            return null;
+            return;
         }
 
-        MediaVolumeConfigRoot root = JsonUtility.FromJson<MediaVolumeConfigRoot>(json);
-
-        if (root != null)
+        for (int i = 0; i < targetAudioSources.Length; i++)
         {
-            if (root.media_volume != null)
+            AudioSource source = targetAudioSources[i];
+
+            if (source == null)
             {
-                return root.media_volume;
+                continue;
             }
 
-            if (root.mediaVolume != null)
-            {
-                return root.mediaVolume;
-            }
-
-            if (root.MediaVolume != null)
-            {
-                return root.MediaVolume;
-            }
+            source.volume = currentVolume;
         }
-
-        MediaVolumeConfig directConfig = JsonUtility.FromJson<MediaVolumeConfig>(json);
-
-        if (directConfig == null)
-        {
-            return null;
-        }
-
-        return directConfig;
     }
 
-    private static string ResolveFullPath(string path)
+    private void SubscribeEvents()
     {
-        if (string.IsNullOrWhiteSpace(path))
+        if (eventDispatcher == null)
         {
-            return Path.Combine(
-                Application.streamingAssetsPath,
-                DefaultStreamingAssetsPath
-            );
+            return;
         }
 
-        string trimmedPath = path.Trim();
+        eventDispatcher.MediaVolumeUpReceived -= OnMediaVolumeUpReceived;
+        eventDispatcher.MediaVolumeDownReceived -= OnMediaVolumeDownReceived;
 
-        if (trimmedPath.StartsWith("\"") && trimmedPath.EndsWith("\""))
+        eventDispatcher.MediaVolumeUpReceived += OnMediaVolumeUpReceived;
+        eventDispatcher.MediaVolumeDownReceived += OnMediaVolumeDownReceived;
+    }
+
+    private void UnsubscribeEvents()
+    {
+        if (eventDispatcher == null)
         {
-            trimmedPath = trimmedPath.Substring(1, trimmedPath.Length - 2);
+            return;
         }
 
-        // %USERPROFILE% などのWindows環境変数を展開する。
-        string expandedPath = Environment.ExpandEnvironmentVariables(trimmedPath);
+        eventDispatcher.MediaVolumeUpReceived -= OnMediaVolumeUpReceived;
+        eventDispatcher.MediaVolumeDownReceived -= OnMediaVolumeDownReceived;
+    }
 
-        // C:\... のような絶対Pathならそのまま使う。
-        if (Path.IsPathRooted(expandedPath))
+    private void OnMediaVolumeUpReceived(GuiEventMessage message)
+    {
+        IncreaseVolume();
+    }
+
+    private void OnMediaVolumeDownReceived(GuiEventMessage message)
+    {
+        DecreaseVolume();
+    }
+
+    private void LoadConfig()
+    {
+        if (useJsonConfig)
         {
-            return expandedPath;
+            config = MediaVolumeConfigLoader.Load(configPath);
+        }
+        else
+        {
+            config = MediaVolumeConfig.CreateDefault();
         }
 
-        // 相対Pathの場合はStreamingAssets配下として扱う。
-        return Path.Combine(
-            Application.streamingAssetsPath,
-            expandedPath
-        );
+        currentVolume = Mathf.Clamp(currentVolume, config.min, config.max);
+    }
+
+    private void EnsureConfig()
+    {
+        if (config != null)
+        {
+            return;
+        }
+
+        LoadConfig();
+    }
+
+    private void ResolveReferences()
+    {
+        if (eventDispatcher == null)
+        {
+            eventDispatcher = FindFirstObjectByType<GuiEventDispatcher>();
+        }
     }
 }
