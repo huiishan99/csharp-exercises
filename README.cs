@@ -1,230 +1,552 @@
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.IO;
+using System.Text;
+using System.Text.RegularExpressions;
 using UnityEngine;
 
-public class KinemaCommandBridge : MonoBehaviour
+namespace PushButtonSliderLite
 {
-    [SerializeField] private GuiBackendTcpClientService commandSender;
-
-    [Header("Default HVAC")]
-    [SerializeField] private int defaultHvacVolume = 128;
-
-    [Header("Legacy Audio Output Command")]
-    [SerializeField] private bool logBlockedAudioOutputCommand = true;
-
-    [Header("Legacy Haptic Vibration Command")]
-    [SerializeField] private bool logBlockedLegacyVibrationCommand = true;
-
-    private void Awake()
+    [DisallowMultipleComponent]
+    public sealed class HapticPresetCommandEmitter : MonoBehaviour
     {
-        ResolveReferences();
-    }
-
-    public void SendFullModeCommand()
-    {
-        SendCommand(GuiCommandFactory.FullModeCommand);
-    }
-
-    public void SendHalfModeCommand()
-    {
-        SendCommand(GuiCommandFactory.HalfModeCommand);
-    }
-
-    public void SendCloseModeCommand()
-    {
-        SendCommand(GuiCommandFactory.CloseModeCommand);
-    }
-
-    public void SendLedMainPowerOnCommand()
-    {
-        SendCommand(GuiCommandFactory.LedMainPowerOnCommand);
-    }
-
-    public void SendLedSubPowerOnCommand()
-    {
-        SendCommand(GuiCommandFactory.LedSubPowerOnCommand);
-    }
-
-    public void SendLedMainPowerOffCommand()
-    {
-        SendCommand(GuiCommandFactory.LedMainPowerOffCommand);
-    }
-
-    public void SendLedSubPowerOffCommand()
-    {
-        SendCommand(GuiCommandFactory.LedSubPowerOffCommand);
-    }
-
-    public void SendShifterStartCommand()
-    {
-        SendCommand(GuiCommandFactory.ShifterStartCommand);
-    }
-
-    public void SendShifterStopCommand()
-    {
-        SendCommand(GuiCommandFactory.ShifterStopCommand);
-    }
-
-    public void SendSystemStartRelatedCommands()
-    {
-        SendLedMainPowerOnCommand();
-        SendLedSubPowerOnCommand();
-        SendShifterStartCommand();
-    }
-
-    public void SendSystemStopRelatedCommands()
-    {
-        SendLedMainPowerOffCommand();
-        SendLedSubPowerOffCommand();
-        SendShifterStopCommand();
-    }
-
-    /// <summary>
-    /// Lighting preset command.
-    /// Backend最新仕様ではpreset_idを送信せず、indexのみ送信する。
-    /// </summary>
-    public void SendLightingPresetCommand(int index)
-    {
-        string payload = GuiCommandFactory.CreateIndexPayload("index", index);
-        SendCommand(GuiCommandFactory.StartLedPresetCommand, payload);
-    }
-
-    public void SendLightingBrightnessCommand(float brightness)
-    {
-        string payload = GuiCommandFactory.CreateFloatPayload(
-            "brightness",
-            Mathf.Clamp01(brightness)
-        );
-
-        SendCommand(GuiCommandFactory.SetLedBrightnessCommand, payload);
-    }
-
-    public void SendLightingSaturationCommand(float saturation)
-    {
-        string payload = GuiCommandFactory.CreateFloatPayload(
-            "saturation",
-            Mathf.Clamp01(saturation)
-        );
-
-        SendCommand(GuiCommandFactory.SetLedSaturationCommand, payload);
-    }
-
-    /// <summary>
-    /// 最新Haptic仕様。
-    /// CMD_HVAC_SET_VIBRATION payload: {"pattern":"Set_A"}
-    /// </summary>
-    public void SendHvacVibrationPatternCommand(string pattern)
-    {
-        string payload = GuiCommandFactory.CreateHvacVibrationPatternPayload(pattern);
-        SendCommand(GuiCommandFactory.SetHvacVibrationCommand, payload);
-    }
-
-    public void SendHvacSoundCommand(int sound)
-    {
-        SendHvacSoundCommand(sound, defaultHvacVolume);
-    }
-
-    public void SendHvacSoundCommand(int sound, int defaultVolume)
-    {
-        string payload = GuiCommandFactory.CreateHvacSoundPayload(
-            sound,
-            defaultVolume
-        );
-
-        SendCommand(GuiCommandFactory.SetHvacSoundCommand, payload);
-    }
-
-    /// <summary>
-    /// Legacy method.
-    /// 旧仕様ではvibration/default_volumeを送信していたが、
-    /// 最新仕様ではpattern指定に変更されたため正式送信しない。
-    /// </summary>
-    [System.Obsolete("Use SendHvacVibrationPatternCommand instead.")]
-    public void SendHvacVibrationCommand(int vibration)
-    {
-        SendHvacVibrationCommand(vibration, defaultHvacVolume);
-    }
-
-    /// <summary>
-    /// Legacy method.
-    /// 既存コンポーネントが呼んでもbackendへ旧payloadを送らない。
-    /// </summary>
-    [System.Obsolete("Use SendHvacVibrationPatternCommand instead.")]
-    public void SendHvacVibrationCommand(int vibration, int defaultVolume)
-    {
-        if (!logBlockedLegacyVibrationCommand)
+        private sealed class HapticPreset
         {
-            return;
+            public string key;
+            public int sound;
+            public int soundVolumeDefault;
+            public string vibrationPattern;
         }
 
-        Debug.Log(
-            "[GUI CMD] Blocked deprecated CMD_HVAC_SET_VIBRATION numeric payload. "
-            + "vibration="
-            + vibration
-            + " defaultVolume="
-            + defaultVolume
-            + ". Use pattern payload instead."
-        );
-    }
+        [SerializeField] private ThemeButtonGroup hapticButtonGroup;
+        [SerializeField] private global::KinemaCommandBridge commandBridge;
 
-    /// <summary>
-    /// Legacy method.
-    /// 最新sequenceではCMD_SET_AUDIO_OUTPUT_STATEをGUIからbackendへ送信しない。
-    /// 既存コンポーネントが呼んでも通信しないようno-opにする。
-    /// </summary>
-    [System.Obsolete("CMD_SET_AUDIO_OUTPUT_STATE is deprecated. This method intentionally does not send any command.")]
-    public void SendAudioOutputStateCommand(bool leftOn, bool rightOn, float volume)
-    {
-        if (!logBlockedAudioOutputCommand)
+        [Header("Config")]
+        [SerializeField] private bool useJsonConfig = true;
+
+        // 外部絶対Pathも指定可能。
+        // 例: %USERPROFILE%\Desktop\backend_ver19\config\haptic_presets.json
+        [SerializeField] private string configPath =
+            "%USERPROFILE%\\Desktop\\backend_ver19\\config\\haptic_presets.json";
+
+        [SerializeField] private bool loadConfigOnEnable = true;
+
+        [Header("Command")]
+        [SerializeField] private bool sendSoundCommand = true;
+        [SerializeField] private bool sendVibrationPatternCommand = true;
+
+        [Header("Initial Send")]
+        [SerializeField] private bool sendInitialSelectionOnFirstEnable = true;
+        [SerializeField] private bool sendCurrentSelectionOnEveryEnable = false;
+        [SerializeField] private int fallbackDefaultIndex = 0;
+
+        [Header("Debug")]
+        [SerializeField] private bool logSend = true;
+        [SerializeField] private bool logConfig = true;
+
+        private readonly Dictionary<int, HapticPreset> presets =
+            new Dictionary<int, HapticPreset>();
+
+        private Coroutine initialSendRoutine;
+        private bool hasSentInitialSelection;
+
+        private void Awake()
         {
-            return;
+            ResolveReferences();
+            LoadConfig(true);
         }
 
-        Debug.Log(
-            "[GUI CMD] Blocked deprecated CMD_SET_AUDIO_OUTPUT_STATE. "
-            + "left="
-            + leftOn
-            + " right="
-            + rightOn
-            + " volume="
-            + Mathf.Clamp01(volume).ToString("0.###")
-        );
-    }
-
-    private void SendCommand(string messageType)
-    {
-        ResolveReferences();
-
-        if (commandSender == null)
+        private void OnEnable()
         {
-            Debug.LogWarning("[GUI CMD] Command sender is not assigned. type=" + messageType);
-            return;
+            ResolveReferences();
+
+            if (loadConfigOnEnable)
+            {
+                LoadConfig(true);
+            }
+
+            if (hapticButtonGroup != null)
+            {
+                hapticButtonGroup.onUserSelectedIndexChanged.RemoveListener(OnUserSelectedHaptic);
+                hapticButtonGroup.onUserSelectedIndexChanged.AddListener(OnUserSelectedHaptic);
+            }
+
+            if (ShouldSendInitialOrCurrent())
+            {
+                StartDelayedCurrentSelectionSend();
+            }
         }
 
-        commandSender.SendCommand(messageType);
-    }
-
-    private void SendCommand(string messageType, string payloadJson)
-    {
-        ResolveReferences();
-
-        if (commandSender == null)
+        private void OnDisable()
         {
-            Debug.LogWarning("[GUI CMD] Command sender is not assigned. type=" + messageType);
-            return;
+            if (hapticButtonGroup != null)
+            {
+                hapticButtonGroup.onUserSelectedIndexChanged.RemoveListener(OnUserSelectedHaptic);
+            }
+
+            if (initialSendRoutine != null)
+            {
+                StopCoroutine(initialSendRoutine);
+                initialSendRoutine = null;
+            }
         }
 
-        commandSender.SendCommand(messageType, payloadJson);
-    }
-
-    private void ResolveReferences()
-    {
-        if (commandSender == null)
+        [ContextMenu("Reload Haptic Config")]
+        public void ReloadConfig()
         {
-            commandSender = GetComponent<GuiBackendTcpClientService>();
+            LoadConfig(true);
         }
 
-        if (commandSender == null)
+        public void OnUserSelectedHaptic(int index)
         {
-            commandSender = FindFirstObjectByType<GuiBackendTcpClientService>();
+            SendHapticPreset(index, "UserSelectionChanged");
+        }
+
+        public void SendCurrentSelection()
+        {
+            int index = ResolveCurrentIndex();
+            SendHapticPreset(index, "CurrentSelection");
+        }
+
+        private bool ShouldSendInitialOrCurrent()
+        {
+            if (sendCurrentSelectionOnEveryEnable)
+            {
+                return true;
+            }
+
+            if (sendInitialSelectionOnFirstEnable && !hasSentInitialSelection)
+            {
+                return true;
+            }
+
+            return false;
+        }
+
+        private void StartDelayedCurrentSelectionSend()
+        {
+            if (initialSendRoutine != null)
+            {
+                StopCoroutine(initialSendRoutine);
+            }
+
+            initialSendRoutine = StartCoroutine(SendCurrentSelectionNextFrame());
+        }
+
+        private IEnumerator SendCurrentSelectionNextFrame()
+        {
+            // ThemeButtonGroup.Start() のDefault選択処理が終わるのを待つ。
+            yield return null;
+
+            initialSendRoutine = null;
+
+            int index = ResolveCurrentIndex();
+
+            SendHapticPreset(
+                index,
+                hasSentInitialSelection ? "EnableCurrentSelection" : "InitialDefaultSelection"
+            );
+
+            hasSentInitialSelection = true;
+        }
+
+        private int ResolveCurrentIndex()
+        {
+            ResolveReferences();
+
+            if (hapticButtonGroup != null && hapticButtonGroup.SelectedIndex >= 0)
+            {
+                return hapticButtonGroup.SelectedIndex;
+            }
+
+            return Mathf.Clamp(fallbackDefaultIndex, 0, 5);
+        }
+
+        private void SendHapticPreset(int index, string reason)
+        {
+            ResolveReferences();
+            EnsureConfigLoaded();
+
+            if (index < 0)
+            {
+                Debug.LogWarning("[Haptic CMD] Invalid index: " + index);
+                return;
+            }
+
+            if (commandBridge == null)
+            {
+                Debug.LogWarning("[Haptic CMD] KinemaCommandBridge is not assigned.");
+                return;
+            }
+
+            HapticPreset preset = GetPresetOrDefault(index);
+
+            if (logSend)
+            {
+                Debug.Log(
+                    "[Haptic CMD] key="
+                    + preset.key
+                    + " sound="
+                    + preset.sound
+                    + " soundVolume="
+                    + preset.soundVolumeDefault
+                    + " vibrationPattern="
+                    + preset.vibrationPattern
+                    + " reason="
+                    + reason
+                );
+            }
+
+            if (sendSoundCommand)
+            {
+                commandBridge.SendHvacSoundCommand(
+                    preset.sound,
+                    preset.soundVolumeDefault
+                );
+            }
+
+            if (sendVibrationPatternCommand)
+            {
+                commandBridge.SendHvacVibrationPatternCommand(
+                    preset.vibrationPattern
+                );
+            }
+        }
+
+        private void EnsureConfigLoaded()
+        {
+            if (presets.Count > 0)
+            {
+                return;
+            }
+
+            LoadConfig(false);
+        }
+
+        private void LoadConfig(bool forceReload)
+        {
+            if (!forceReload && presets.Count > 0)
+            {
+                return;
+            }
+
+            presets.Clear();
+
+            if (!useJsonConfig)
+            {
+                LoadDefaultConfig();
+                return;
+            }
+
+            string fullPath = ResolveConfigFullPath(configPath);
+
+            if (!File.Exists(fullPath))
+            {
+                Debug.LogWarning(
+                    "[Haptic Config] File not found: "
+                    + fullPath
+                    + ". Use default config."
+                );
+
+                LoadDefaultConfig();
+                return;
+            }
+
+            try
+            {
+                string json = File.ReadAllText(fullPath, Encoding.UTF8);
+                ParseJsonConfig(json);
+
+                if (presets.Count == 0)
+                {
+                    Debug.LogWarning(
+                        "[Haptic Config] No valid presets found. Use default config. path="
+                        + fullPath
+                    );
+
+                    LoadDefaultConfig();
+                    return;
+                }
+
+                if (logConfig)
+                {
+                    Debug.Log("[Haptic Config] Loaded from " + fullPath);
+                }
+            }
+            catch (Exception exception)
+            {
+                Debug.LogWarning(
+                    "[Haptic Config] Load error: "
+                    + exception.Message
+                    + ". Use default config."
+                );
+
+                LoadDefaultConfig();
+            }
+        }
+
+        private string ResolveConfigFullPath(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return Path.Combine(
+                    Application.streamingAssetsPath,
+                    "Haptic/haptic_presets.json"
+                );
+            }
+
+            string trimmedPath = path.Trim();
+
+            if (trimmedPath.StartsWith("\"") && trimmedPath.EndsWith("\""))
+            {
+                trimmedPath = trimmedPath.Substring(1, trimmedPath.Length - 2);
+            }
+
+            string expandedPath = Environment.ExpandEnvironmentVariables(trimmedPath);
+
+            if (Path.IsPathRooted(expandedPath))
+            {
+                return expandedPath;
+            }
+
+            return Path.Combine(
+                Application.streamingAssetsPath,
+                expandedPath
+            );
+        }
+
+        private void ParseJsonConfig(string json)
+        {
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return;
+            }
+
+            Regex presetRegex = new Regex(
+                "\"(?<key>Hap(?<number>\\d+))\"\\s*:\\s*\\{(?<body>.*?)\\}",
+                RegexOptions.IgnoreCase | RegexOptions.Singleline
+            );
+
+            MatchCollection matches = presetRegex.Matches(json);
+
+            for (int i = 0; i < matches.Count; i++)
+            {
+                Match match = matches[i];
+
+                string key = match.Groups["key"].Value;
+                string body = match.Groups["body"].Value;
+
+                if (!int.TryParse(match.Groups["number"].Value, out int oneBasedNumber))
+                {
+                    continue;
+                }
+
+                int index = Mathf.Clamp(oneBasedNumber - 1, 0, 5);
+                HapticPreset fallback = CreateDefaultPreset(index);
+
+                HapticPreset preset = new HapticPreset
+                {
+                    key = key,
+                    sound = ReadIntOrDefault(
+                        body,
+                        fallback.sound,
+                        "Sound",
+                        "sound"
+                    ),
+                    soundVolumeDefault = ReadIntOrDefault(
+                        body,
+                        fallback.soundVolumeDefault,
+                        "Sound_Volume_Default",
+                        "SoundVolumeDefault",
+                        "default_volume",
+                        "DefaultVolume"
+                    ),
+                    vibrationPattern = ReadStringOrDefault(
+                        body,
+                        fallback.vibrationPattern,
+                        "Vibration_Pattern",
+                        "VibrationPattern",
+                        "Pattern",
+                        "pattern"
+                    )
+                };
+
+                ClampPreset(preset);
+                presets[index] = preset;
+            }
+        }
+
+        private int ReadIntOrDefault(
+            string body,
+            int defaultValue,
+            params string[] fieldNames
+        )
+        {
+            if (fieldNames == null)
+            {
+                return defaultValue;
+            }
+
+            for (int i = 0; i < fieldNames.Length; i++)
+            {
+                string fieldName = fieldNames[i];
+
+                Regex fieldRegex = new Regex(
+                    "\"" + Regex.Escape(fieldName) + "\"\\s*:\\s*(?<value>-?\\d+)",
+                    RegexOptions.IgnoreCase | RegexOptions.Singleline
+                );
+
+                Match match = fieldRegex.Match(body);
+
+                if (!match.Success)
+                {
+                    continue;
+                }
+
+                if (int.TryParse(match.Groups["value"].Value, out int value))
+                {
+                    return value;
+                }
+            }
+
+            return defaultValue;
+        }
+
+        private string ReadStringOrDefault(
+            string body,
+            string defaultValue,
+            params string[] fieldNames
+        )
+        {
+            if (fieldNames == null)
+            {
+                return defaultValue;
+            }
+
+            for (int i = 0; i < fieldNames.Length; i++)
+            {
+                string fieldName = fieldNames[i];
+
+                Regex fieldRegex = new Regex(
+                    "\"" + Regex.Escape(fieldName) + "\"\\s*:\\s*\"(?<value>[^\"]*)\"",
+                    RegexOptions.IgnoreCase | RegexOptions.Singleline
+                );
+
+                Match match = fieldRegex.Match(body);
+
+                if (!match.Success)
+                {
+                    continue;
+                }
+
+                string value = match.Groups["value"].Value;
+
+                if (!string.IsNullOrEmpty(value))
+                {
+                    return value;
+                }
+            }
+
+            return defaultValue;
+        }
+
+        private void LoadDefaultConfig()
+        {
+            presets.Clear();
+
+            for (int i = 0; i < 6; i++)
+            {
+                presets[i] = CreateDefaultPreset(i);
+            }
+
+            if (logConfig)
+            {
+                Debug.Log("[Haptic Config] Loaded default config.");
+            }
+        }
+
+        private HapticPreset GetPresetOrDefault(int index)
+        {
+            int safeIndex = Mathf.Clamp(index, 0, 5);
+
+            if (presets.TryGetValue(safeIndex, out HapticPreset preset))
+            {
+                return preset;
+            }
+
+            return CreateDefaultPreset(safeIndex);
+        }
+
+        private HapticPreset CreateDefaultPreset(int index)
+        {
+            int safeIndex = Mathf.Clamp(index, 0, 5);
+
+            return new HapticPreset
+            {
+                key = "Hap" + (safeIndex + 1),
+                sound = safeIndex * 2 + 1,
+                soundVolumeDefault = 128,
+                vibrationPattern = "Set_" + GetPatternLetter(safeIndex)
+            };
+        }
+
+        private string GetPatternLetter(int index)
+        {
+            int safeIndex = Mathf.Clamp(index, 0, 5);
+
+            switch (safeIndex)
+            {
+                case 0:
+                    return "A";
+
+                case 1:
+                    return "B";
+
+                case 2:
+                    return "C";
+
+                case 3:
+                    return "D";
+
+                case 4:
+                    return "E";
+
+                case 5:
+                    return "F";
+
+                default:
+                    return "A";
+            }
+        }
+
+        private void ClampPreset(HapticPreset preset)
+        {
+            if (preset == null)
+            {
+                return;
+            }
+
+            preset.sound = Mathf.Clamp(preset.sound, 0, 255);
+            preset.soundVolumeDefault = Mathf.Clamp(preset.soundVolumeDefault, 0, 255);
+
+            if (string.IsNullOrEmpty(preset.vibrationPattern))
+            {
+                preset.vibrationPattern = "Set_A";
+            }
+        }
+
+        private void ResolveReferences()
+        {
+            if (hapticButtonGroup == null)
+            {
+                hapticButtonGroup = GetComponent<ThemeButtonGroup>();
+            }
+
+            if (commandBridge == null)
+            {
+                commandBridge = FindFirstObjectByType<global::KinemaCommandBridge>();
+            }
         }
     }
 }
