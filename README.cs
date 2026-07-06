@@ -1,205 +1,32 @@
-using UnityEngine;
-
-public class KinemaCommandBridge : MonoBehaviour
 {
-    [SerializeField] private GuiBackendTcpClientService commandSender;
-
-    [Header("Default HVAC")]
-    [SerializeField] private int defaultHvacVolume = 128;
-
-    [Header("Legacy Audio Output Command")]
-    [SerializeField] private bool logBlockedAudioOutputCommand = true;
-
-    private void Awake()
-    {
-        ResolveReferences();
-    }
-
-    public void SendFullModeCommand()
-    {
-        SendCommand(GuiCommandFactory.FullModeCommand);
-    }
-
-    public void SendHalfModeCommand()
-    {
-        SendCommand(GuiCommandFactory.HalfModeCommand);
-    }
-
-    public void SendCloseModeCommand()
-    {
-        SendCommand(GuiCommandFactory.CloseModeCommand);
-    }
-
-    public void SendLedMainPowerOnCommand()
-    {
-        SendCommand(GuiCommandFactory.LedMainPowerOnCommand);
-    }
-
-    public void SendLedSubPowerOnCommand()
-    {
-        SendCommand(GuiCommandFactory.LedSubPowerOnCommand);
-    }
-
-    public void SendLedMainPowerOffCommand()
-    {
-        SendCommand(GuiCommandFactory.LedMainPowerOffCommand);
-    }
-
-    public void SendLedSubPowerOffCommand()
-    {
-        SendCommand(GuiCommandFactory.LedSubPowerOffCommand);
-    }
-
-    public void SendShifterStartCommand()
-    {
-        SendCommand(GuiCommandFactory.ShifterStartCommand);
-    }
-
-    public void SendShifterStopCommand()
-    {
-        SendCommand(GuiCommandFactory.ShifterStopCommand);
-    }
-
-    public void SendSystemStartRelatedCommands()
-    {
-        SendLedMainPowerOnCommand();
-        SendLedSubPowerOnCommand();
-        SendShifterStartCommand();
-    }
-
-    public void SendSystemStopRelatedCommands()
-    {
-        SendLedMainPowerOffCommand();
-        SendLedSubPowerOffCommand();
-        SendShifterStopCommand();
-    }
-
-    /// <summary>
-    /// Lighting preset command.
-    /// Backend最新仕様ではpreset_idを送信せず、indexのみ送信する。
-    /// </summary>
-    public void SendLightingPresetCommand(int index)
-    {
-        string payload = GuiCommandFactory.CreateIndexPayload("index", index);
-        SendCommand(GuiCommandFactory.StartLedPresetCommand, payload);
-    }
-
-    public void SendLightingBrightnessCommand(float brightness)
-    {
-        string payload = GuiCommandFactory.CreateFloatPayload(
-            "brightness",
-            Mathf.Clamp01(brightness)
-        );
-
-        SendCommand(GuiCommandFactory.SetLedBrightnessCommand, payload);
-    }
-
-    public void SendLightingSaturationCommand(float saturation)
-    {
-        string payload = GuiCommandFactory.CreateFloatPayload(
-            "saturation",
-            Mathf.Clamp01(saturation)
-        );
-
-        SendCommand(GuiCommandFactory.SetLedSaturationCommand, payload);
-    }
-
-    public void SendHvacVibrationPatternCommand(string pattern)
-    {
-        string payload = GuiCommandFactory.CreateHvacVibrationPatternPayload(pattern);
-        SendCommand(GuiCommandFactory.SetHvacVibrationCommand, payload);
-    }
-
-    public void SendHvacVibrationCommand(int vibration)
-    {
-        SendHvacVibrationCommand(vibration, defaultHvacVolume);
-    }
-
-    public void SendHvacVibrationCommand(int vibration, int defaultVolume)
-    {
-        string payload = GuiCommandFactory.CreateHvacVibrationPayload(
-            vibration,
-            defaultVolume
-        );
-
-        SendCommand(GuiCommandFactory.SetHvacVibrationCommand, payload);
-    }
-
-    public void SendHvacSoundCommand(int sound)
-    {
-        SendHvacSoundCommand(sound, defaultHvacVolume);
-    }
-
-    public void SendHvacSoundCommand(int sound, int defaultVolume)
-    {
-        string payload = GuiCommandFactory.CreateHvacSoundPayload(
-            sound,
-            defaultVolume
-        );
-
-        SendCommand(GuiCommandFactory.SetHvacSoundCommand, payload);
-    }
-
-    /// <summary>
-    /// Legacy method.
-    /// 最新sequenceではCMD_SET_AUDIO_OUTPUT_STATEをGUIからbackendへ送信しない。
-    /// 既存コンポーネントが呼んでも通信しないようno-opにする。
-    /// </summary>
-    [System.Obsolete("CMD_SET_AUDIO_OUTPUT_STATE is deprecated. This method intentionally does not send any command.")]
-    public void SendAudioOutputStateCommand(bool leftOn, bool rightOn, float volume)
-    {
-        if (!logBlockedAudioOutputCommand)
-        {
-            return;
-        }
-
-        Debug.Log(
-            "[GUI CMD] Blocked deprecated CMD_SET_AUDIO_OUTPUT_STATE. "
-            + "left="
-            + leftOn
-            + " right="
-            + rightOn
-            + " volume="
-            + Mathf.Clamp01(volume).ToString("0.###")
-        );
-    }
-
-    private void SendCommand(string messageType)
-    {
-        ResolveReferences();
-
-        if (commandSender == null)
-        {
-            Debug.LogWarning("[GUI CMD] Command sender is not assigned. type=" + messageType);
-            return;
-        }
-
-        commandSender.SendCommand(messageType);
-    }
-
-    private void SendCommand(string messageType, string payloadJson)
-    {
-        ResolveReferences();
-
-        if (commandSender == null)
-        {
-            Debug.LogWarning("[GUI CMD] Command sender is not assigned. type=" + messageType);
-            return;
-        }
-
-        commandSender.SendCommand(messageType, payloadJson);
-    }
-
-    private void ResolveReferences()
-    {
-        if (commandSender == null)
-        {
-            commandSender = GetComponent<GuiBackendTcpClientService>();
-        }
-
-        if (commandSender == null)
-        {
-            commandSender = FindFirstObjectByType<GuiBackendTcpClientService>();
-        }
-    }
+  "Hap1": {
+    "Sound": 1,
+    "Sound_Volume_Default": 128,
+    "Vibration_Pattern": "Set_A"
+  },
+  "Hap2": {
+    "Sound": 3,
+    "Sound_Volume_Default": 128,
+    "Vibration_Pattern": "Set_B"
+  },
+  "Hap3": {
+    "Sound": 5,
+    "Sound_Volume_Default": 128,
+    "Vibration_Pattern": "Set_C"
+  },
+  "Hap4": {
+    "Sound": 7,
+    "Sound_Volume_Default": 128,
+    "Vibration_Pattern": "Set_D"
+  },
+  "Hap5": {
+    "Sound": 9,
+    "Sound_Volume_Default": 128,
+    "Vibration_Pattern": "Set_E"
+  },
+  "Hap6": {
+    "Sound": 11,
+    "Sound_Volume_Default": 128,
+    "Vibration_Pattern": "Set_F"
+  }
 }
