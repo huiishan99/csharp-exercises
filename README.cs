@@ -1,202 +1,230 @@
-using System.Globalization;
+using UnityEngine;
 
-public static class GuiCommandFactory
+public class KinemaCommandBridge : MonoBehaviour
 {
-    public const string FullModeCommand = "full_mode_cmd";
-    public const string HalfModeCommand = "half_mode_cmd";
-    public const string CloseModeCommand = "close_mode_cmd";
+    [SerializeField] private GuiBackendTcpClientService commandSender;
 
-    public const string LedMainPowerOnCommand = "CMD_LED_MAIN_POWER_ON";
-    public const string LedSubPowerOnCommand = "CMD_LED_SUB_POWER_ON";
-    public const string LedMainPowerOffCommand = "CMD_LED_MAIN_POWER_OFF";
-    public const string LedSubPowerOffCommand = "CMD_LED_SUB_POWER_OFF";
+    [Header("Default HVAC")]
+    [SerializeField] private int defaultHvacVolume = 128;
 
-    public const string ShifterStartCommand = "CMD_SHIFTER_START";
-    public const string ShifterStopCommand = "CMD_SHIFTER_STOP";
+    [Header("Legacy Audio Output Command")]
+    [SerializeField] private bool logBlockedAudioOutputCommand = true;
 
-    public const string StartLedPresetCommand = "CMD_LED_MAIN_START_PRESET";
-    public const string SetLedBrightnessCommand = "CMD_LED_MAIN_SET_BRIGHTNESS";
-    public const string SetLedSaturationCommand = "CMD_LED_MAIN_SET_SATURATION";
+    [Header("Legacy Haptic Vibration Command")]
+    [SerializeField] private bool logBlockedLegacyVibrationCommand = true;
 
-    public const string SetHvacVibrationCommand = "CMD_HVAC_SET_VIBRATION";
-    public const string SetHvacSoundCommand = "CMD_AUDIO_SET_HVAC_SOUND";
-
-    // Legacy:
-    // 最新sequenceではGUIからAudio Output Stateをbackendへ送信しない。
-    // 既存コードの参照を壊さないため定数は一時的に残す。
-    [System.Obsolete("CMD_SET_AUDIO_OUTPUT_STATE is deprecated. GUI must not send this command to backend.")]
-    public const string SetAudioOutputStateCommand = "CMD_SET_AUDIO_OUTPUT_STATE";
-
-    public static string CreateCommand(string messageType)
+    private void Awake()
     {
-        return CreateCommand(messageType, "{}", GuiMessageTypeFieldName.Type);
+        ResolveReferences();
     }
 
-    public static string CreateCommand(string messageType, string payloadJson)
+    public void SendFullModeCommand()
     {
-        return CreateCommand(messageType, payloadJson, GuiMessageTypeFieldName.Type);
+        SendCommand(GuiCommandFactory.FullModeCommand);
     }
 
-    public static string CreateCommand(
-        string messageType,
-        GuiMessageTypeFieldName fieldName
-    )
+    public void SendHalfModeCommand()
     {
-        return CreateCommand(messageType, "{}", fieldName);
+        SendCommand(GuiCommandFactory.HalfModeCommand);
     }
 
-    public static string CreateCommand(
-        string messageType,
-        string payloadJson,
-        GuiMessageTypeFieldName fieldName
-    )
+    public void SendCloseModeCommand()
     {
-        string jsonFieldName = fieldName.ToJsonFieldName();
-        return CreateCommand(messageType, payloadJson, jsonFieldName);
+        SendCommand(GuiCommandFactory.CloseModeCommand);
     }
 
-    public static string CreateCommand(
-        string messageType,
-        string payloadJson,
-        string messageTypeFieldName
-    )
+    public void SendLedMainPowerOnCommand()
     {
-        if (string.IsNullOrEmpty(payloadJson))
+        SendCommand(GuiCommandFactory.LedMainPowerOnCommand);
+    }
+
+    public void SendLedSubPowerOnCommand()
+    {
+        SendCommand(GuiCommandFactory.LedSubPowerOnCommand);
+    }
+
+    public void SendLedMainPowerOffCommand()
+    {
+        SendCommand(GuiCommandFactory.LedMainPowerOffCommand);
+    }
+
+    public void SendLedSubPowerOffCommand()
+    {
+        SendCommand(GuiCommandFactory.LedSubPowerOffCommand);
+    }
+
+    public void SendShifterStartCommand()
+    {
+        SendCommand(GuiCommandFactory.ShifterStartCommand);
+    }
+
+    public void SendShifterStopCommand()
+    {
+        SendCommand(GuiCommandFactory.ShifterStopCommand);
+    }
+
+    public void SendSystemStartRelatedCommands()
+    {
+        SendLedMainPowerOnCommand();
+        SendLedSubPowerOnCommand();
+        SendShifterStartCommand();
+    }
+
+    public void SendSystemStopRelatedCommands()
+    {
+        SendLedMainPowerOffCommand();
+        SendLedSubPowerOffCommand();
+        SendShifterStopCommand();
+    }
+
+    /// <summary>
+    /// Lighting preset command.
+    /// Backend最新仕様ではpreset_idを送信せず、indexのみ送信する。
+    /// </summary>
+    public void SendLightingPresetCommand(int index)
+    {
+        string payload = GuiCommandFactory.CreateIndexPayload("index", index);
+        SendCommand(GuiCommandFactory.StartLedPresetCommand, payload);
+    }
+
+    public void SendLightingBrightnessCommand(float brightness)
+    {
+        string payload = GuiCommandFactory.CreateFloatPayload(
+            "brightness",
+            Mathf.Clamp01(brightness)
+        );
+
+        SendCommand(GuiCommandFactory.SetLedBrightnessCommand, payload);
+    }
+
+    public void SendLightingSaturationCommand(float saturation)
+    {
+        string payload = GuiCommandFactory.CreateFloatPayload(
+            "saturation",
+            Mathf.Clamp01(saturation)
+        );
+
+        SendCommand(GuiCommandFactory.SetLedSaturationCommand, payload);
+    }
+
+    /// <summary>
+    /// 最新Haptic仕様。
+    /// CMD_HVAC_SET_VIBRATION payload: {"pattern":"Set_A"}
+    /// </summary>
+    public void SendHvacVibrationPatternCommand(string pattern)
+    {
+        string payload = GuiCommandFactory.CreateHvacVibrationPatternPayload(pattern);
+        SendCommand(GuiCommandFactory.SetHvacVibrationCommand, payload);
+    }
+
+    public void SendHvacSoundCommand(int sound)
+    {
+        SendHvacSoundCommand(sound, defaultHvacVolume);
+    }
+
+    public void SendHvacSoundCommand(int sound, int defaultVolume)
+    {
+        string payload = GuiCommandFactory.CreateHvacSoundPayload(
+            sound,
+            defaultVolume
+        );
+
+        SendCommand(GuiCommandFactory.SetHvacSoundCommand, payload);
+    }
+
+    /// <summary>
+    /// Legacy method.
+    /// 旧仕様ではvibration/default_volumeを送信していたが、
+    /// 最新仕様ではpattern指定に変更されたため正式送信しない。
+    /// </summary>
+    [System.Obsolete("Use SendHvacVibrationPatternCommand instead.")]
+    public void SendHvacVibrationCommand(int vibration)
+    {
+        SendHvacVibrationCommand(vibration, defaultHvacVolume);
+    }
+
+    /// <summary>
+    /// Legacy method.
+    /// 既存コンポーネントが呼んでもbackendへ旧payloadを送らない。
+    /// </summary>
+    [System.Obsolete("Use SendHvacVibrationPatternCommand instead.")]
+    public void SendHvacVibrationCommand(int vibration, int defaultVolume)
+    {
+        if (!logBlockedLegacyVibrationCommand)
         {
-            payloadJson = "{}";
+            return;
         }
 
-        if (string.IsNullOrEmpty(messageTypeFieldName))
+        Debug.Log(
+            "[GUI CMD] Blocked deprecated CMD_HVAC_SET_VIBRATION numeric payload. "
+            + "vibration="
+            + vibration
+            + " defaultVolume="
+            + defaultVolume
+            + ". Use pattern payload instead."
+        );
+    }
+
+    /// <summary>
+    /// Legacy method.
+    /// 最新sequenceではCMD_SET_AUDIO_OUTPUT_STATEをGUIからbackendへ送信しない。
+    /// 既存コンポーネントが呼んでも通信しないようno-opにする。
+    /// </summary>
+    [System.Obsolete("CMD_SET_AUDIO_OUTPUT_STATE is deprecated. This method intentionally does not send any command.")]
+    public void SendAudioOutputStateCommand(bool leftOn, bool rightOn, float volume)
+    {
+        if (!logBlockedAudioOutputCommand)
         {
-            messageTypeFieldName = "type";
+            return;
         }
 
-        return "{\""
-            + EscapeJson(messageTypeFieldName)
-            + "\":\""
-            + EscapeJson(messageType)
-            + "\",\"payload\":"
-            + payloadJson
-            + "}";
+        Debug.Log(
+            "[GUI CMD] Blocked deprecated CMD_SET_AUDIO_OUTPUT_STATE. "
+            + "left="
+            + leftOn
+            + " right="
+            + rightOn
+            + " volume="
+            + Mathf.Clamp01(volume).ToString("0.###")
+        );
     }
 
-    public static string CreateIndexPayload(string key, int value)
+    private void SendCommand(string messageType)
     {
-        return "{\"" + EscapeJson(key) + "\":" + value + "}";
-    }
+        ResolveReferences();
 
-    public static string CreateFloatPayload(string key, float value)
-    {
-        return "{\""
-            + EscapeJson(key)
-            + "\":"
-            + FloatToJson(value)
-            + "}";
-    }
-
-    public static string CreateHvacVibrationPatternPayload(string pattern)
-    {
-        string safePattern = string.IsNullOrEmpty(pattern)
-            ? "Set_A"
-            : pattern;
-
-        return "{\"pattern\":\"" + EscapeJson(safePattern) + "\"}";
-    }
-
-    public static string CreateHvacSoundPayload(int sound, int defaultVolume)
-    {
-        int safeSound = ClampByte(sound);
-        int safeVolume = ClampByte(defaultVolume);
-
-        return "{\"sound\":"
-            + safeSound
-            + ",\"default_volume\":"
-            + safeVolume
-            + "}";
-    }
-
-    // Legacy helper:
-    // 旧仕様 {"vibration": n, "default_volume": 128} 用。
-    // 最新Hapticでは使用しない。
-    [System.Obsolete("Use CreateHvacVibrationPatternPayload instead.")]
-    public static string CreateHvacVibrationPayload(int vibration, int defaultVolume)
-    {
-        int safeVibration = ClampByte(vibration);
-        int safeVolume = ClampByte(defaultVolume);
-
-        return "{\"vibration\":"
-            + safeVibration
-            + ",\"default_volume\":"
-            + safeVolume
-            + "}";
-    }
-
-    // Legacy helper:
-    // 最新sequenceでは正式送信に使用しない。
-    [System.Obsolete("AudioOutputState payload is deprecated. GUI must not send CMD_SET_AUDIO_OUTPUT_STATE.")]
-    public static string CreateAudioOutputStatePayload(bool left, bool right, float volume)
-    {
-        return "{\"left\":"
-            + BoolToJson(left)
-            + ",\"right\":"
-            + BoolToJson(right)
-            + ",\"volume\":"
-            + FloatToJson(Clamp01(volume))
-            + "}";
-    }
-
-    private static int ClampByte(int value)
-    {
-        if (value < 0)
+        if (commandSender == null)
         {
-            return 0;
+            Debug.LogWarning("[GUI CMD] Command sender is not assigned. type=" + messageType);
+            return;
         }
 
-        if (value > 255)
-        {
-            return 255;
-        }
-
-        return value;
+        commandSender.SendCommand(messageType);
     }
 
-    private static string BoolToJson(bool value)
+    private void SendCommand(string messageType, string payloadJson)
     {
-        return value ? "true" : "false";
-    }
+        ResolveReferences();
 
-    private static string FloatToJson(float value)
-    {
-        return value.ToString("0.###", CultureInfo.InvariantCulture);
-    }
-
-    private static float Clamp01(float value)
-    {
-        if (value < 0f)
+        if (commandSender == null)
         {
-            return 0f;
+            Debug.LogWarning("[GUI CMD] Command sender is not assigned. type=" + messageType);
+            return;
         }
 
-        if (value > 1f)
-        {
-            return 1f;
-        }
-
-        return value;
+        commandSender.SendCommand(messageType, payloadJson);
     }
 
-    private static string EscapeJson(string value)
+    private void ResolveReferences()
     {
-        if (string.IsNullOrEmpty(value))
+        if (commandSender == null)
         {
-            return "";
+            commandSender = GetComponent<GuiBackendTcpClientService>();
         }
 
-        return value
-            .Replace("\\", "\\\\")
-            .Replace("\"", "\\\"")
-            .Replace("\n", "\\n")
-            .Replace("\r", "\\r")
-            .Replace("\t", "\\t");
+        if (commandSender == null)
+        {
+            commandSender = FindFirstObjectByType<GuiBackendTcpClientService>();
+        }
     }
 }
