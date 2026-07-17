@@ -1,174 +1,387 @@
 using System;
+using System.Collections;
 using UnityEngine;
-using UnityEngine.Events;
+using UnityEngine.UI;
 
 namespace PushButtonSliderLite
 {
+    public enum LightingLevelSpriteMode
+    {
+        Brightness,
+        Saturation
+    }
+
     /// <summary>
-    /// +/- Button操作によって、HorizontalSliderValueを固定Stepで変更する。
-    /// 現行SettingPageではdrag操作を使用せず、0.1単位の離散値として扱う。
+    /// 1つのThemeに対応するSaturation画像セット。
+    /// levelSprites[0] = 0%
+    /// levelSprites[10] = 100%
+    /// </summary>
+    [Serializable]
+    public sealed class SaturationThemeSpriteSet
+    {
+        [Tooltip("Inspector確認用のTheme名。Commandには使用しない。")]
+        public string themeName;
+
+        [Tooltip("0%, 10% ... 100% の順で11枚設定する。")]
+        public Sprite[] levelSprites = new Sprite[11];
+    }
+
+    /// <summary>
+    /// Brightness / Saturationの現在値に応じて、
+    /// 0%～100%の離散Spriteを表示する。
+    ///
+    /// Brightness:
+    /// 11枚の共通Spriteを使用する。
+    ///
+    /// Saturation:
+    /// Theme indexとlevel indexから6×11枚のSpriteを選択する。
     /// </summary>
     [DisallowMultipleComponent]
-    public sealed class HorizontalSliderStepController : MonoBehaviour
+    public sealed class LightingLevelSpriteView : MonoBehaviour
     {
-        [Serializable]
-        public sealed class FloatEvent : UnityEvent<float>
-        {
-        }
+        private const int LevelCount = 11;
+        private const int MaxLevelIndex = 10;
 
-        [Header("Target Slider")]
+        [Header("Mode")]
+        [SerializeField]
+        private LightingLevelSpriteMode mode =
+            LightingLevelSpriteMode.Brightness;
+
+        [Header("References")]
         [SerializeField] private HorizontalSliderValue sliderValue;
+        [SerializeField] private HorizontalSliderStepController stepController;
+        [SerializeField] private Image targetImage;
 
-        [Header("Optional Visual Effect")]
-        [Tooltip("旧Slider Handle / Glowを使用しない場合はNoneでよい。")]
-        [SerializeField] private SliderDragVisualEffect visualEffect;
+        [Header("Theme Reference - Saturation Only")]
+        [Tooltip("Saturationの場合、HapticGroupではなくLighting用ThemeGroupを設定する。")]
+        [SerializeField] private ThemeButtonGroup themeButtonGroup;
 
-        [Header("Step Settings")]
-        [SerializeField, Range(0.001f, 1f)] private float step = 0.1f;
+        [SerializeField, Range(0, 5)]
+        private int fallbackThemeIndex = 0;
 
-        [Tooltip("値をStep単位へ丸める。0.1の場合は0.0, 0.1 ... 1.0になる。")]
-        [SerializeField] private bool quantizeValueToStep = true;
+        [Header("Brightness Sprites")]
+        [Tooltip("0%, 10% ... 100% の順で11枚設定する。")]
+        [SerializeField]
+        private Sprite[] brightnessLevelSprites =
+            new Sprite[LevelCount];
 
-        [Tooltip("起動時にInspector上の初期値もStep単位へ丸める。")]
-        [SerializeField] private bool normalizeInitialValue = true;
+        [Header("Saturation Sprites")]
+        [Tooltip("ThemeButtonGroupと同じ順番で6セット設定する。")]
+        [SerializeField]
+        private SaturationThemeSpriteSet[] saturationThemeSprites =
+            new SaturationThemeSpriteSet[6];
 
-        [Header("Value Changed Event")]
-        public FloatEvent onValueChangedByStep = new FloatEvent();
+        [Header("Image Settings")]
+        [SerializeField] private bool disableTargetRaycast = true;
 
-        public float Step
-        {
-            get { return step; }
-        }
+        [Header("Debug")]
+        [SerializeField] private bool logMissingSprite = true;
+        [SerializeField] private bool logAppliedSprite = false;
+
+        private Coroutine refreshRoutine;
 
         private void Awake()
         {
             ResolveReferences();
+            ApplyImageSettings();
+        }
 
-            if (normalizeInitialValue && sliderValue != null)
+        private void OnEnable()
+        {
+            ResolveReferences();
+            ApplyImageSettings();
+            SubscribeEvents();
+
+            // 現在値を即時反映する。
+            RefreshCurrentSprite();
+
+            // ThemeButtonGroup.Start()によるDefault選択完了後にも再反映する。
+            RequestRefreshNextFrame();
+        }
+
+        private void OnDisable()
+        {
+            UnsubscribeEvents();
+
+            if (refreshRoutine != null)
             {
-                sliderValue.SetValue(QuantizeValue(sliderValue.Value));
+                StopCoroutine(refreshRoutine);
+                refreshRoutine = null;
             }
         }
 
         private void OnValidate()
         {
-            step = Mathf.Clamp(step, 0.001f, 1f);
+            fallbackThemeIndex =
+                Mathf.Clamp(fallbackThemeIndex, 0, 5);
+
+            ApplyImageSettings();
         }
 
-        /// <summary>
-        /// + ButtonのOnClickに設定する。
-        /// </summary>
-        public void Increase()
-        {
-            AddStep(1f);
-        }
-
-        /// <summary>
-        /// - ButtonのOnClickに設定する。
-        /// </summary>
-        public void Decrease()
-        {
-            AddStep(-1f);
-        }
-
-        /// <summary>
-        /// directionが正の場合は加算、負の場合は減算する。
-        /// </summary>
-        public void AddStep(float direction)
+        [ContextMenu("Refresh Current Sprite")]
+        public void RefreshCurrentSprite()
         {
             ResolveReferences();
 
-            if (sliderValue == null)
+            if (sliderValue == null || targetImage == null)
             {
                 return;
             }
 
-            if (Mathf.Approximately(direction, 0f))
-            {
-                return;
-            }
-
-            float previousValue = QuantizeValue(sliderValue.Value);
-
-            float nextValue = previousValue
-                + step * Mathf.Sign(direction);
-
-            nextValue = QuantizeValue(nextValue);
-
-            sliderValue.SetValue(nextValue);
-
-            float appliedValue = QuantizeValue(sliderValue.Value);
-
-            if (visualEffect != null)
-            {
-                visualEffect.SyncGlowPosition();
-            }
-
-            // 0.0で-を押した場合、1.0で+を押した場合は通知しない。
-            if (Mathf.Approximately(previousValue, appliedValue))
-            {
-                return;
-            }
-
-            onValueChangedByStep.Invoke(appliedValue);
+            ApplySprite(
+                sliderValue.Value,
+                ResolveCurrentThemeIndex()
+            );
         }
 
-        public void SetStep(float newStep)
+        private void OnStepValueChanged(float value)
         {
-            step = Mathf.Clamp(newStep, 0.001f, 1f);
-
-            ResolveReferences();
-
-            if (sliderValue != null)
-            {
-                sliderValue.SetValue(QuantizeValue(sliderValue.Value));
-            }
+            ApplySprite(
+                value,
+                ResolveCurrentThemeIndex()
+            );
         }
 
-        [ContextMenu("Normalize Current Value")]
-        public void NormalizeCurrentValue()
+        private void OnThemeChanged(int themeIndex)
         {
-            ResolveReferences();
-
-            if (sliderValue == null)
+            if (mode != LightingLevelSpriteMode.Saturation)
             {
                 return;
             }
 
-            sliderValue.SetValue(QuantizeValue(sliderValue.Value));
+            float currentValue = sliderValue == null
+                ? 0f
+                : sliderValue.Value;
+
+            ApplySprite(currentValue, themeIndex);
         }
 
-        private float QuantizeValue(float inputValue)
+        private void ApplySprite(float value, int themeIndex)
         {
-            float clampedValue = Mathf.Clamp01(inputValue);
-
-            if (!quantizeValueToStep)
+            if (targetImage == null)
             {
-                return clampedValue;
+                return;
             }
 
-            float safeStep = Mathf.Clamp(step, 0.001f, 1f);
+            int levelIndex = ConvertValueToLevelIndex(value);
 
-            float quantizedValue =
-                Mathf.Round(clampedValue / safeStep) * safeStep;
+            Sprite nextSprite = mode
+                == LightingLevelSpriteMode.Brightness
+                    ? GetBrightnessSprite(levelIndex)
+                    : GetSaturationSprite(themeIndex, levelIndex);
 
-            // 0.30000004等がCommandへ送信されないよう、小数誤差を整理する。
-            quantizedValue =
-                Mathf.Round(quantizedValue * 1000f) / 1000f;
+            if (nextSprite == null)
+            {
+                if (logMissingSprite)
+                {
+                    Debug.LogWarning(
+                        "[LightingLevelSpriteView] Sprite is not assigned."
+                        + " object="
+                        + gameObject.name
+                        + " mode="
+                        + mode
+                        + " themeIndex="
+                        + themeIndex
+                        + " levelIndex="
+                        + levelIndex
+                    );
+                }
 
-            return Mathf.Clamp01(quantizedValue);
+                // 未設定時に現在の画像を消さない。
+                return;
+            }
+
+            targetImage.sprite = nextSprite;
+            targetImage.enabled = true;
+
+            if (logAppliedSprite)
+            {
+                Debug.Log(
+                    "[LightingLevelSpriteView] Applied."
+                    + " object="
+                    + gameObject.name
+                    + " mode="
+                    + mode
+                    + " themeIndex="
+                    + themeIndex
+                    + " levelIndex="
+                    + levelIndex
+                    + " sprite="
+                    + nextSprite.name
+                );
+            }
+        }
+
+        private int ConvertValueToLevelIndex(float value)
+        {
+            float normalizedValue = Mathf.Clamp01(value);
+
+            return Mathf.Clamp(
+                Mathf.RoundToInt(normalizedValue * MaxLevelIndex),
+                0,
+                MaxLevelIndex
+            );
+        }
+
+        private Sprite GetBrightnessSprite(int levelIndex)
+        {
+            if (brightnessLevelSprites == null)
+            {
+                return null;
+            }
+
+            if (levelIndex < 0
+                || levelIndex >= brightnessLevelSprites.Length)
+            {
+                return null;
+            }
+
+            return brightnessLevelSprites[levelIndex];
+        }
+
+        private Sprite GetSaturationSprite(
+            int themeIndex,
+            int levelIndex
+        )
+        {
+            if (saturationThemeSprites == null
+                || saturationThemeSprites.Length == 0)
+            {
+                return null;
+            }
+
+            int safeThemeIndex = Mathf.Clamp(
+                themeIndex,
+                0,
+                saturationThemeSprites.Length - 1
+            );
+
+            SaturationThemeSpriteSet themeSet =
+                saturationThemeSprites[safeThemeIndex];
+
+            if (themeSet == null
+                || themeSet.levelSprites == null)
+            {
+                return null;
+            }
+
+            if (levelIndex < 0
+                || levelIndex >= themeSet.levelSprites.Length)
+            {
+                return null;
+            }
+
+            return themeSet.levelSprites[levelIndex];
+        }
+
+        private int ResolveCurrentThemeIndex()
+        {
+            if (mode != LightingLevelSpriteMode.Saturation)
+            {
+                return 0;
+            }
+
+            if (themeButtonGroup != null
+                && themeButtonGroup.SelectedIndex >= 0)
+            {
+                return themeButtonGroup.SelectedIndex;
+            }
+
+            return fallbackThemeIndex;
+        }
+
+        private void SubscribeEvents()
+        {
+            if (stepController != null)
+            {
+                stepController.onValueChangedByStep.RemoveListener(
+                    OnStepValueChanged
+                );
+
+                stepController.onValueChangedByStep.AddListener(
+                    OnStepValueChanged
+                );
+            }
+
+            if (mode == LightingLevelSpriteMode.Saturation
+                && themeButtonGroup != null)
+            {
+                themeButtonGroup.onSelectedIndexChanged.RemoveListener(
+                    OnThemeChanged
+                );
+
+                themeButtonGroup.onSelectedIndexChanged.AddListener(
+                    OnThemeChanged
+                );
+            }
+        }
+
+        private void UnsubscribeEvents()
+        {
+            if (stepController != null)
+            {
+                stepController.onValueChangedByStep.RemoveListener(
+                    OnStepValueChanged
+                );
+            }
+
+            if (themeButtonGroup != null)
+            {
+                themeButtonGroup.onSelectedIndexChanged.RemoveListener(
+                    OnThemeChanged
+                );
+            }
+        }
+
+        private void RequestRefreshNextFrame()
+        {
+            if (!isActiveAndEnabled)
+            {
+                return;
+            }
+
+            if (refreshRoutine != null)
+            {
+                StopCoroutine(refreshRoutine);
+            }
+
+            refreshRoutine =
+                StartCoroutine(RefreshNextFrame());
+        }
+
+        private IEnumerator RefreshNextFrame()
+        {
+            yield return null;
+
+            refreshRoutine = null;
+            RefreshCurrentSprite();
+        }
+
+        private void ApplyImageSettings()
+        {
+            if (targetImage == null)
+            {
+                return;
+            }
+
+            if (disableTargetRaycast)
+            {
+                targetImage.raycastTarget = false;
+            }
         }
 
         private void ResolveReferences()
         {
             if (sliderValue == null)
             {
-                sliderValue = GetComponent<HorizontalSliderValue>();
+                sliderValue =
+                    GetComponent<HorizontalSliderValue>();
             }
 
-            if (visualEffect == null)
+            if (stepController == null)
             {
-                visualEffect = GetComponent<SliderDragVisualEffect>();
+                stepController =
+                    GetComponent<HorizontalSliderStepController>();
             }
         }
     }
