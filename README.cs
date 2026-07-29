@@ -1,357 +1,508 @@
-using System.Globalization;
+using UnityEngine;
 
-public static class GuiCommandFactory
+public class KinemaCommandBridge : MonoBehaviour
 {
+    [Header("Backend TCP")]
+    [SerializeField]
+    private GuiBackendTcpClientService commandSender;
+
+    [Header("Default HVAC Sound Volume")]
+    [SerializeField, Range(0, 255)]
+    private int defaultHvacSoundVolume = 128;
+
+    [Header("Legacy Command Protection")]
+    [SerializeField]
+    private bool logBlockedLegacyCommand = true;
+
+    private void Awake()
+    {
+        ResolveReferences();
+    }
+
     // ============================================================
     // Mecha
     // ============================================================
 
-    public const string HalfModeCommand =
-        "CMD_MECHA_TRANSITION_TO_HALF";
+    public void SendHalfModeCommand()
+    {
+        SendCommand(
+            GuiCommandFactory.HalfModeCommand
+        );
+    }
 
-    public const string FullModeCommand =
-        "CMD_MECHA_TRANSITION_TO_FULL";
+    public void SendFullModeCommand()
+    {
+        SendCommand(
+            GuiCommandFactory.FullModeCommand
+        );
+    }
 
-    public const string CloseModeCommand =
-        "CMD_MECHA_TRANSITION_TO_CLOSE";
+    public void SendCloseModeCommand()
+    {
+        SendCommand(
+            GuiCommandFactory.CloseModeCommand
+        );
+    }
+
+    // 新しい名称をUnityコード側でも使用する場合の入口。
+    public void SendMechaTransitionToHalfCommand()
+    {
+        SendHalfModeCommand();
+    }
+
+    public void SendMechaTransitionToFullCommand()
+    {
+        SendFullModeCommand();
+    }
+
+    public void SendMechaTransitionToCloseCommand()
+    {
+        SendCloseModeCommand();
+    }
 
     // ============================================================
     // LED Power
     // ============================================================
 
-    public const string LedMainPowerOnCommand =
-        "CMD_LED_MAIN_POWER_ON";
+    public void SendLedMainPowerOnCommand()
+    {
+        SendCommand(
+            GuiCommandFactory.LedMainPowerOnCommand
+        );
+    }
 
-    public const string LedSubPowerOnCommand =
-        "CMD_LED_SUB_POWER_ON";
+    public void SendLedSubPowerOnCommand()
+    {
+        SendCommand(
+            GuiCommandFactory.LedSubPowerOnCommand
+        );
+    }
 
-    public const string LedMainPowerOffCommand =
-        "CMD_LED_MAIN_POWER_OFF";
+    public void SendLedMainPowerOffCommand()
+    {
+        SendCommand(
+            GuiCommandFactory.LedMainPowerOffCommand
+        );
+    }
 
-    public const string LedSubPowerOffCommand =
-        "CMD_LED_SUB_POWER_OFF";
+    public void SendLedSubPowerOffCommand()
+    {
+        SendCommand(
+            GuiCommandFactory.LedSubPowerOffCommand
+        );
+    }
 
     // ============================================================
     // Shifter
     // ============================================================
 
-    public const string ShifterStartCommand =
-        "CMD_SHIFTER_START";
+    public void SendShifterStartCommand()
+    {
+        SendCommand(
+            GuiCommandFactory.ShifterStartCommand
+        );
+    }
 
-    public const string ShifterStopCommand =
-        "CMD_SHIFTER_STOP";
+    public void SendShifterStopCommand()
+    {
+        SendCommand(
+            GuiCommandFactory.ShifterStopCommand
+        );
+    }
+
+    /// <summary>
+    /// IGN ON時に送信するDevice起動Command。
+    /// Mecha遷移Commandは別途送信する。
+    /// </summary>
+    public void SendSystemStartRelatedCommands()
+    {
+        SendLedMainPowerOnCommand();
+        SendLedSubPowerOnCommand();
+        SendShifterStartCommand();
+    }
+
+    /// <summary>
+    /// IGN OFF時に送信するDevice停止Command。
+    /// Mecha遷移Commandは別途送信する。
+    /// </summary>
+    public void SendSystemStopRelatedCommands()
+    {
+        SendLedMainPowerOffCommand();
+        SendLedSubPowerOffCommand();
+        SendShifterStopCommand();
+    }
 
     // ============================================================
     // Lighting
     // ============================================================
 
-    public const string StartLedPresetCommand =
-        "CMD_LED_MAIN_START_PRESET";
+    /// <summary>
+    /// Lighting presetを開始する。
+    /// payloadはindexのみを送信する。
+    /// </summary>
+    public void SendLightingPresetCommand(int index)
+    {
+        if (index < 0 || index > 7)
+        {
+            Debug.LogWarning(
+                "[GUI CMD] Lighting preset index is out of range: "
+                + index
+            );
 
-    public const string StopLedMainPresetCommand =
-        "CMD_LED_MAIN_STOP_PRESET";
+            return;
+        }
 
-    public const string SetLedBrightnessCommand =
-        "CMD_LED_MAIN_SET_BRIGHTNESS";
+        string payload =
+            GuiCommandFactory.CreateIndexPayload(
+                "index",
+                index
+            );
 
-    public const string SetLedSaturationCommand =
-        "CMD_LED_MAIN_SET_SATURATION";
+        SendCommand(
+            GuiCommandFactory.StartLedPresetCommand,
+            payload
+        );
+    }
+
+    /// <summary>
+    /// 現在のLighting presetを停止する。
+    /// </summary>
+    public void SendLightingPresetStopCommand()
+    {
+        SendCommand(
+            GuiCommandFactory.StopLedMainPresetCommand
+        );
+    }
+
+    public void SendLightingBrightnessCommand(
+        float brightness
+    )
+    {
+        float safeBrightness =
+            Mathf.Clamp01(brightness);
+
+        string payload =
+            GuiCommandFactory.CreateFloatPayload(
+                "brightness",
+                safeBrightness
+            );
+
+        SendCommand(
+            GuiCommandFactory.SetLedBrightnessCommand,
+            payload
+        );
+    }
+
+    public void SendLightingSaturationCommand(
+        float saturation
+    )
+    {
+        float safeSaturation =
+            Mathf.Clamp01(saturation);
+
+        string payload =
+            GuiCommandFactory.CreateFloatPayload(
+                "saturation",
+                safeSaturation
+            );
+
+        SendCommand(
+            GuiCommandFactory.SetLedSaturationCommand,
+            payload
+        );
+    }
 
     // ============================================================
-    // HVAC
+    // HVAC Display Mode
     // ============================================================
 
-    public const string SetHvacDisplayModeCommand =
-        "CMD_HVAC_SET_DISPLAY_MODE";
+    public void SendHvacDisplayModeCommand(
+        string mode
+    )
+    {
+        string payload =
+            GuiCommandFactory.CreateHvacDisplayModePayload(
+                mode
+            );
 
-    public const string SetHvacVibrationCommand =
-        "CMD_HVAC_SET_VIBRATION";
+        SendCommand(
+            GuiCommandFactory.SetHvacDisplayModeCommand,
+            payload
+        );
+    }
 
-    public const string HvacDisplayModeOn = "ON";
-    public const string HvacDisplayModeAuto = "AUTO";
-    public const string HvacDisplayModeOff = "OFF";
+    public void SendHvacDisplayModeOnCommand()
+    {
+        SendHvacDisplayModeCommand(
+            GuiCommandFactory.HvacDisplayModeOn
+        );
+    }
+
+    public void SendHvacDisplayModeAutoCommand()
+    {
+        SendHvacDisplayModeCommand(
+            GuiCommandFactory.HvacDisplayModeAuto
+        );
+    }
+
+    public void SendHvacDisplayModeOffCommand()
+    {
+        SendHvacDisplayModeCommand(
+            GuiCommandFactory.HvacDisplayModeOff
+        );
+    }
 
     // ============================================================
     // Haptic Sound
     // ============================================================
 
-    public const string SetHvacPushSoundCommand =
-        "CMD_SOUND_SET_PUSH_HVAC";
-
-    public const string SetHvacReleaseSoundCommand =
-        "CMD_SOUND_SET_RELEASE_HVAC";
-
-    // ============================================================
-    // Command envelope
-    // ============================================================
-
     /// <summary>
-    /// payloadが空のCommand JSONを生成する。
+    /// HVAC Push音を設定する。
     /// </summary>
-    public static string CreateCommand(string messageType)
+    public void SendHvacPushSoundCommand(
+        int sound
+    )
     {
-        return CreateCommand(
-            messageType,
-            "{}",
-            GuiMessageTypeFieldName.Type
+        SendHvacPushSoundCommand(
+            sound,
+            defaultHvacSoundVolume
         );
     }
 
     /// <summary>
-    /// payloadを指定してCommand JSONを生成する。
+    /// HVAC Push音を設定する。
+    /// Command:
+    /// CMD_SOUND_SET_PUSH_HVAC
     /// </summary>
-    public static string CreateCommand(
-        string messageType,
-        string payloadJson
-    )
-    {
-        return CreateCommand(
-            messageType,
-            payloadJson,
-            GuiMessageTypeFieldName.Type
-        );
-    }
-
-    /// <summary>
-    /// message type fieldを指定してCommand JSONを生成する。
-    /// 正式Backend通信ではTypeを使用する。
-    /// </summary>
-    public static string CreateCommand(
-        string messageType,
-        GuiMessageTypeFieldName fieldName
-    )
-    {
-        return CreateCommand(
-            messageType,
-            "{}",
-            fieldName
-        );
-    }
-
-    /// <summary>
-    /// payloadとmessage type fieldを指定してCommand JSONを生成する。
-    /// </summary>
-    public static string CreateCommand(
-        string messageType,
-        string payloadJson,
-        GuiMessageTypeFieldName fieldName
-    )
-    {
-        string jsonFieldName = fieldName.ToJsonFieldName();
-
-        return CreateCommand(
-            messageType,
-            payloadJson,
-            jsonFieldName
-        );
-    }
-
-    /// <summary>
-    /// Command JSON本体を生成する。
-    /// </summary>
-    public static string CreateCommand(
-        string messageType,
-        string payloadJson,
-        string messageTypeFieldName
-    )
-    {
-        if (string.IsNullOrWhiteSpace(messageType))
-        {
-            messageType = "";
-        }
-
-        if (string.IsNullOrWhiteSpace(payloadJson))
-        {
-            payloadJson = "{}";
-        }
-
-        if (string.IsNullOrWhiteSpace(messageTypeFieldName))
-        {
-            messageTypeFieldName = "type";
-        }
-
-        return "{\""
-            + EscapeJson(messageTypeFieldName)
-            + "\":\""
-            + EscapeJson(messageType)
-            + "\",\"payload\":"
-            + payloadJson
-            + "}";
-    }
-
-    // ============================================================
-    // Common payload
-    // ============================================================
-
-    /// <summary>
-    /// int値を1件含むpayloadを生成する。
-    /// 例: {"index":2}
-    /// </summary>
-    public static string CreateIndexPayload(
-        string key,
-        int value
-    )
-    {
-        return "{\""
-            + EscapeJson(key)
-            + "\":"
-            + value
-            + "}";
-    }
-
-    /// <summary>
-    /// float値を1件含むpayloadを生成する。
-    /// 例: {"brightness":0.5}
-    /// </summary>
-    public static string CreateFloatPayload(
-        string key,
-        float value
-    )
-    {
-        return "{\""
-            + EscapeJson(key)
-            + "\":"
-            + FloatToJson(value)
-            + "}";
-    }
-
-    /// <summary>
-    /// string値を1件含むpayloadを生成する。
-    /// 例: {"mode":"AUTO"}
-    /// </summary>
-    public static string CreateStringPayload(
-        string key,
-        string value
-    )
-    {
-        return "{\""
-            + EscapeJson(key)
-            + "\":\""
-            + EscapeJson(value)
-            + "\"}";
-    }
-
-    // ============================================================
-    // HVAC payload
-    // ============================================================
-
-    /// <summary>
-    /// HVAC表示Mode payloadを生成する。
-    /// mode: ON / AUTO / OFF
-    /// </summary>
-    public static string CreateHvacDisplayModePayload(
-        string mode
-    )
-    {
-        string safeMode = NormalizeHvacDisplayMode(mode);
-
-        return CreateStringPayload(
-            "mode",
-            safeMode
-        );
-    }
-
-    /// <summary>
-    /// HVAC振動Pattern payloadを生成する。
-    /// 例: {"pattern":"Set_A"}
-    /// </summary>
-    public static string CreateHvacVibrationPatternPayload(
-        string pattern
-    )
-    {
-        string safePattern = string.IsNullOrWhiteSpace(pattern)
-            ? "Set_A"
-            : pattern.Trim();
-
-        return CreateStringPayload(
-            "pattern",
-            safePattern
-        );
-    }
-
-    // ============================================================
-    // Sound payload
-    // ============================================================
-
-    /// <summary>
-    /// Push / Release Sound共通payloadを生成する。
-    /// soundとdefault_volumeは0～255に制限する。
-    /// </summary>
-    public static string CreateSoundPayload(
+    public void SendHvacPushSoundCommand(
         int sound,
         int defaultVolume
     )
     {
-        int safeSound = ClampByte(sound);
-        int safeVolume = ClampByte(defaultVolume);
+        string payload =
+            GuiCommandFactory.CreateSoundPayload(
+                sound,
+                defaultVolume
+            );
 
-        return "{\"sound\":"
-            + safeSound
-            + ",\"default_volume\":"
-            + safeVolume
-            + "}";
-    }
-
-    // ============================================================
-    // Internal helper
-    // ============================================================
-
-    private static string NormalizeHvacDisplayMode(
-        string mode
-    )
-    {
-        if (string.IsNullOrWhiteSpace(mode))
-        {
-            return HvacDisplayModeOn;
-        }
-
-        string normalized = mode.Trim().ToUpperInvariant();
-
-        if (normalized == HvacDisplayModeOn
-            || normalized == HvacDisplayModeAuto
-            || normalized == HvacDisplayModeOff)
-        {
-            return normalized;
-        }
-
-        return HvacDisplayModeOn;
-    }
-
-    private static int ClampByte(int value)
-    {
-        if (value < 0)
-        {
-            return 0;
-        }
-
-        if (value > 255)
-        {
-            return 255;
-        }
-
-        return value;
-    }
-
-    private static string FloatToJson(float value)
-    {
-        return value.ToString(
-            "0.###",
-            CultureInfo.InvariantCulture
+        SendCommand(
+            GuiCommandFactory.SetHvacPushSoundCommand,
+            payload
         );
     }
 
-    private static string EscapeJson(string value)
+    /// <summary>
+    /// HVAC Release音を設定する。
+    /// </summary>
+    public void SendHvacReleaseSoundCommand(
+        int sound
+    )
     {
-        if (string.IsNullOrEmpty(value))
+        SendHvacReleaseSoundCommand(
+            sound,
+            defaultHvacSoundVolume
+        );
+    }
+
+    /// <summary>
+    /// HVAC Release音を設定する。
+    /// Command:
+    /// CMD_SOUND_SET_RELEASE_HVAC
+    /// </summary>
+    public void SendHvacReleaseSoundCommand(
+        int sound,
+        int defaultVolume
+    )
+    {
+        string payload =
+            GuiCommandFactory.CreateSoundPayload(
+                sound,
+                defaultVolume
+            );
+
+        SendCommand(
+            GuiCommandFactory.SetHvacReleaseSoundCommand,
+            payload
+        );
+    }
+
+    // ============================================================
+    // Haptic Vibration
+    // ============================================================
+
+    /// <summary>
+    /// HVAC振動パターンを設定する。
+    /// Command:
+    /// CMD_HVAC_SET_VIBRATION
+    /// </summary>
+    public void SendHvacVibrationPatternCommand(
+        string pattern
+    )
+    {
+        string payload =
+            GuiCommandFactory
+                .CreateHvacVibrationPatternPayload(
+                    pattern
+                );
+
+        SendCommand(
+            GuiCommandFactory.SetHvacVibrationCommand,
+            payload
+        );
+    }
+
+    // ============================================================
+    // Legacy compatibility
+    // ============================================================
+
+    /// <summary>
+    /// 旧CMD_AUDIO_SET_HVAC_SOUNDは廃止済み。
+    /// 既存Scriptから呼ばれてもBackendへは送信しない。
+    /// </summary>
+    public void SendHvacSoundCommand(
+        int sound
+    )
+    {
+        LogBlockedLegacyCommand(
+            "SendHvacSoundCommand",
+            "Use SendHvacPushSoundCommand and "
+            + "SendHvacReleaseSoundCommand."
+        );
+    }
+
+    /// <summary>
+    /// 旧CMD_AUDIO_SET_HVAC_SOUNDは廃止済み。
+    /// </summary>
+    public void SendHvacSoundCommand(
+        int sound,
+        int defaultVolume
+    )
+    {
+        LogBlockedLegacyCommand(
+            "SendHvacSoundCommand",
+            "Use SendHvacPushSoundCommand and "
+            + "SendHvacReleaseSoundCommand."
+        );
+    }
+
+    /// <summary>
+    /// 旧vibration/default_volume形式は廃止済み。
+    /// </summary>
+    public void SendHvacVibrationCommand(
+        int vibration
+    )
+    {
+        LogBlockedLegacyCommand(
+            "SendHvacVibrationCommand",
+            "Use SendHvacVibrationPatternCommand."
+        );
+    }
+
+    /// <summary>
+    /// 旧vibration/default_volume形式は廃止済み。
+    /// </summary>
+    public void SendHvacVibrationCommand(
+        int vibration,
+        int defaultVolume
+    )
+    {
+        LogBlockedLegacyCommand(
+            "SendHvacVibrationCommand",
+            "Use SendHvacVibrationPatternCommand."
+        );
+    }
+
+    /// <summary>
+    /// CMD_SET_AUDIO_OUTPUT_STATEは廃止済み。
+    /// </summary>
+    public void SendAudioOutputStateCommand(
+        bool leftOn,
+        bool rightOn,
+        float volume
+    )
+    {
+        LogBlockedLegacyCommand(
+            "SendAudioOutputStateCommand",
+            "CMD_SET_AUDIO_OUTPUT_STATE is not sent."
+        );
+    }
+
+    private void LogBlockedLegacyCommand(
+        string methodName,
+        string replacement
+    )
+    {
+        if (!logBlockedLegacyCommand)
         {
-            return "";
+            return;
         }
 
-        return value
-            .Replace("\\", "\\\\")
-            .Replace("\"", "\\\"")
-            .Replace("\n", "\\n")
-            .Replace("\r", "\\r")
-            .Replace("\t", "\\t");
+        Debug.LogWarning(
+            "[GUI CMD] Blocked legacy command call: "
+            + methodName
+            + ". "
+            + replacement
+        );
+    }
+
+    // ============================================================
+    // Internal send
+    // ============================================================
+
+    private void SendCommand(string messageType)
+    {
+        ResolveReferences();
+
+        if (commandSender == null)
+        {
+            Debug.LogWarning(
+                "[GUI CMD] Backend TCP client is not assigned. type="
+                + messageType
+            );
+
+            return;
+        }
+
+        commandSender.SendCommand(messageType);
+    }
+
+    private void SendCommand(
+        string messageType,
+        string payloadJson
+    )
+    {
+        ResolveReferences();
+
+        if (commandSender == null)
+        {
+            Debug.LogWarning(
+                "[GUI CMD] Backend TCP client is not assigned. type="
+                + messageType
+            );
+
+            return;
+        }
+
+        commandSender.SendCommand(
+            messageType,
+            payloadJson
+        );
+    }
+
+    private void ResolveReferences()
+    {
+        if (commandSender == null)
+        {
+            commandSender =
+                GetComponent<GuiBackendTcpClientService>();
+        }
+
+        if (commandSender == null)
+        {
+            commandSender =
+                FindFirstObjectByType<
+                    GuiBackendTcpClientService
+                >();
+        }
     }
 }
