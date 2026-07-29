@@ -1,388 +1,357 @@
-using System;
-using System.Collections;
-using UnityEngine;
-using UnityEngine.UI;
+using System.Globalization;
 
-namespace PushButtonSliderLite
+public static class GuiCommandFactory
 {
-    public enum LightingLevelSpriteMode
+    // ============================================================
+    // Mecha
+    // ============================================================
+
+    public const string HalfModeCommand =
+        "CMD_MECHA_TRANSITION_TO_HALF";
+
+    public const string FullModeCommand =
+        "CMD_MECHA_TRANSITION_TO_FULL";
+
+    public const string CloseModeCommand =
+        "CMD_MECHA_TRANSITION_TO_CLOSE";
+
+    // ============================================================
+    // LED Power
+    // ============================================================
+
+    public const string LedMainPowerOnCommand =
+        "CMD_LED_MAIN_POWER_ON";
+
+    public const string LedSubPowerOnCommand =
+        "CMD_LED_SUB_POWER_ON";
+
+    public const string LedMainPowerOffCommand =
+        "CMD_LED_MAIN_POWER_OFF";
+
+    public const string LedSubPowerOffCommand =
+        "CMD_LED_SUB_POWER_OFF";
+
+    // ============================================================
+    // Shifter
+    // ============================================================
+
+    public const string ShifterStartCommand =
+        "CMD_SHIFTER_START";
+
+    public const string ShifterStopCommand =
+        "CMD_SHIFTER_STOP";
+
+    // ============================================================
+    // Lighting
+    // ============================================================
+
+    public const string StartLedPresetCommand =
+        "CMD_LED_MAIN_START_PRESET";
+
+    public const string StopLedMainPresetCommand =
+        "CMD_LED_MAIN_STOP_PRESET";
+
+    public const string SetLedBrightnessCommand =
+        "CMD_LED_MAIN_SET_BRIGHTNESS";
+
+    public const string SetLedSaturationCommand =
+        "CMD_LED_MAIN_SET_SATURATION";
+
+    // ============================================================
+    // HVAC
+    // ============================================================
+
+    public const string SetHvacDisplayModeCommand =
+        "CMD_HVAC_SET_DISPLAY_MODE";
+
+    public const string SetHvacVibrationCommand =
+        "CMD_HVAC_SET_VIBRATION";
+
+    public const string HvacDisplayModeOn = "ON";
+    public const string HvacDisplayModeAuto = "AUTO";
+    public const string HvacDisplayModeOff = "OFF";
+
+    // ============================================================
+    // Haptic Sound
+    // ============================================================
+
+    public const string SetHvacPushSoundCommand =
+        "CMD_SOUND_SET_PUSH_HVAC";
+
+    public const string SetHvacReleaseSoundCommand =
+        "CMD_SOUND_SET_RELEASE_HVAC";
+
+    // ============================================================
+    // Command envelope
+    // ============================================================
+
+    /// <summary>
+    /// payloadが空のCommand JSONを生成する。
+    /// </summary>
+    public static string CreateCommand(string messageType)
     {
-        Brightness,
-        Saturation
+        return CreateCommand(
+            messageType,
+            "{}",
+            GuiMessageTypeFieldName.Type
+        );
     }
 
     /// <summary>
-    /// 1つのThemeに対応するSaturation画像セット。
-    /// levelSprites[0] = 0%
-    /// levelSprites[10] = 100%
+    /// payloadを指定してCommand JSONを生成する。
     /// </summary>
-    [Serializable]
-    public sealed class SaturationThemeSpriteSet
+    public static string CreateCommand(
+        string messageType,
+        string payloadJson
+    )
     {
-        [Tooltip("Inspector確認用のTheme名。Commandには使用しない。")]
-        public string themeName;
-
-        [Tooltip("0%, 10% ... 100% の順で11枚設定する。")]
-        public Sprite[] levelSprites = new Sprite[11];
+        return CreateCommand(
+            messageType,
+            payloadJson,
+            GuiMessageTypeFieldName.Type
+        );
     }
 
     /// <summary>
-    /// Brightness / Saturationの現在値に応じて、
-    /// 0%～100%の離散Spriteを表示する。
-    ///
-    /// Brightness:
-    /// 11枚の共通Spriteを使用する。
-    ///
-    /// Saturation:
-    /// Theme indexとlevel indexから6×11枚のSpriteを選択する。
+    /// message type fieldを指定してCommand JSONを生成する。
+    /// 正式Backend通信ではTypeを使用する。
     /// </summary>
-    [DisallowMultipleComponent]
-    public sealed class LightingLevelSpriteView : MonoBehaviour
+    public static string CreateCommand(
+        string messageType,
+        GuiMessageTypeFieldName fieldName
+    )
     {
-        private const int LevelCount = 11;
-        private const int MaxLevelIndex = 10;
+        return CreateCommand(
+            messageType,
+            "{}",
+            fieldName
+        );
+    }
 
-        [Header("Mode")]
-        [SerializeField]
-        private LightingLevelSpriteMode mode =
-            LightingLevelSpriteMode.Brightness;
+    /// <summary>
+    /// payloadとmessage type fieldを指定してCommand JSONを生成する。
+    /// </summary>
+    public static string CreateCommand(
+        string messageType,
+        string payloadJson,
+        GuiMessageTypeFieldName fieldName
+    )
+    {
+        string jsonFieldName = fieldName.ToJsonFieldName();
 
-        [Header("References")]
-        [SerializeField] private HorizontalSliderValue sliderValue;
-        [SerializeField] private HorizontalSliderStepController stepController;
-        [SerializeField] private Image targetImage;
+        return CreateCommand(
+            messageType,
+            payloadJson,
+            jsonFieldName
+        );
+    }
 
-        [Header("Theme Reference - Saturation Only")]
-        [Tooltip("Saturationの場合、HapticGroupではなくLighting用ThemeGroupを設定する。")]
-        [SerializeField] private ThemeButtonGroup themeButtonGroup;
-
-        [SerializeField, Range(0, 5)]
-        private int fallbackThemeIndex = 0;
-
-        [Header("Brightness Sprites")]
-        [Tooltip("0%, 10% ... 100% の順で11枚設定する。")]
-        [SerializeField]
-        private Sprite[] brightnessLevelSprites =
-            new Sprite[LevelCount];
-
-        [Header("Saturation Sprites")]
-        [Tooltip("ThemeButtonGroupと同じ順番で6セット設定する。")]
-        [SerializeField]
-        private SaturationThemeSpriteSet[] saturationThemeSprites =
-            new SaturationThemeSpriteSet[6];
-
-        [Header("Image Settings")]
-        [SerializeField] private bool disableTargetRaycast = true;
-
-        [Header("Debug")]
-        [SerializeField] private bool logMissingSprite = true;
-        [SerializeField] private bool logAppliedSprite = false;
-
-        private Coroutine refreshRoutine;
-
-        private void Awake()
+    /// <summary>
+    /// Command JSON本体を生成する。
+    /// </summary>
+    public static string CreateCommand(
+        string messageType,
+        string payloadJson,
+        string messageTypeFieldName
+    )
+    {
+        if (string.IsNullOrWhiteSpace(messageType))
         {
-            ResolveReferences();
-            ApplyImageSettings();
+            messageType = "";
         }
 
-        private void OnEnable()
+        if (string.IsNullOrWhiteSpace(payloadJson))
         {
-            ResolveReferences();
-            ApplyImageSettings();
-            SubscribeEvents();
-
-            // 現在値を即時反映する。
-            RefreshCurrentSprite();
-
-            // ThemeButtonGroup.Start()によるDefault選択完了後にも再反映する。
-            RequestRefreshNextFrame();
+            payloadJson = "{}";
         }
 
-        private void OnDisable()
+        if (string.IsNullOrWhiteSpace(messageTypeFieldName))
         {
-            UnsubscribeEvents();
-
-            if (refreshRoutine != null)
-            {
-                StopCoroutine(refreshRoutine);
-                refreshRoutine = null;
-            }
+            messageTypeFieldName = "type";
         }
 
-        private void OnValidate()
-        {
-            fallbackThemeIndex =
-                Mathf.Clamp(fallbackThemeIndex, 0, 5);
+        return "{\""
+            + EscapeJson(messageTypeFieldName)
+            + "\":\""
+            + EscapeJson(messageType)
+            + "\",\"payload\":"
+            + payloadJson
+            + "}";
+    }
 
-            ApplyImageSettings();
+    // ============================================================
+    // Common payload
+    // ============================================================
+
+    /// <summary>
+    /// int値を1件含むpayloadを生成する。
+    /// 例: {"index":2}
+    /// </summary>
+    public static string CreateIndexPayload(
+        string key,
+        int value
+    )
+    {
+        return "{\""
+            + EscapeJson(key)
+            + "\":"
+            + value
+            + "}";
+    }
+
+    /// <summary>
+    /// float値を1件含むpayloadを生成する。
+    /// 例: {"brightness":0.5}
+    /// </summary>
+    public static string CreateFloatPayload(
+        string key,
+        float value
+    )
+    {
+        return "{\""
+            + EscapeJson(key)
+            + "\":"
+            + FloatToJson(value)
+            + "}";
+    }
+
+    /// <summary>
+    /// string値を1件含むpayloadを生成する。
+    /// 例: {"mode":"AUTO"}
+    /// </summary>
+    public static string CreateStringPayload(
+        string key,
+        string value
+    )
+    {
+        return "{\""
+            + EscapeJson(key)
+            + "\":\""
+            + EscapeJson(value)
+            + "\"}";
+    }
+
+    // ============================================================
+    // HVAC payload
+    // ============================================================
+
+    /// <summary>
+    /// HVAC表示Mode payloadを生成する。
+    /// mode: ON / AUTO / OFF
+    /// </summary>
+    public static string CreateHvacDisplayModePayload(
+        string mode
+    )
+    {
+        string safeMode = NormalizeHvacDisplayMode(mode);
+
+        return CreateStringPayload(
+            "mode",
+            safeMode
+        );
+    }
+
+    /// <summary>
+    /// HVAC振動Pattern payloadを生成する。
+    /// 例: {"pattern":"Set_A"}
+    /// </summary>
+    public static string CreateHvacVibrationPatternPayload(
+        string pattern
+    )
+    {
+        string safePattern = string.IsNullOrWhiteSpace(pattern)
+            ? "Set_A"
+            : pattern.Trim();
+
+        return CreateStringPayload(
+            "pattern",
+            safePattern
+        );
+    }
+
+    // ============================================================
+    // Sound payload
+    // ============================================================
+
+    /// <summary>
+    /// Push / Release Sound共通payloadを生成する。
+    /// soundとdefault_volumeは0～255に制限する。
+    /// </summary>
+    public static string CreateSoundPayload(
+        int sound,
+        int defaultVolume
+    )
+    {
+        int safeSound = ClampByte(sound);
+        int safeVolume = ClampByte(defaultVolume);
+
+        return "{\"sound\":"
+            + safeSound
+            + ",\"default_volume\":"
+            + safeVolume
+            + "}";
+    }
+
+    // ============================================================
+    // Internal helper
+    // ============================================================
+
+    private static string NormalizeHvacDisplayMode(
+        string mode
+    )
+    {
+        if (string.IsNullOrWhiteSpace(mode))
+        {
+            return HvacDisplayModeOn;
         }
 
-        [ContextMenu("Refresh Current Sprite")]
-        public void RefreshCurrentSprite()
+        string normalized = mode.Trim().ToUpperInvariant();
+
+        if (normalized == HvacDisplayModeOn
+            || normalized == HvacDisplayModeAuto
+            || normalized == HvacDisplayModeOff)
         {
-            ResolveReferences();
-
-            if (sliderValue == null || targetImage == null)
-            {
-                return;
-            }
-
-            ApplySprite(
-                sliderValue.Value,
-                ResolveCurrentThemeIndex()
-            );
+            return normalized;
         }
 
-        private void OnStepValueChanged(float value)
+        return HvacDisplayModeOn;
+    }
+
+    private static int ClampByte(int value)
+    {
+        if (value < 0)
         {
-            ApplySprite(
-                value,
-                ResolveCurrentThemeIndex()
-            );
+            return 0;
         }
 
-        private void OnThemeChanged(int themeIndex)
+        if (value > 255)
         {
-            if (mode != LightingLevelSpriteMode.Saturation)
-            {
-                return;
-            }
-
-            float currentValue = sliderValue == null
-                ? 0f
-                : sliderValue.Value;
-
-            ApplySprite(currentValue, themeIndex);
+            return 255;
         }
 
-        private void ApplySprite(float value, int themeIndex)
+        return value;
+    }
+
+    private static string FloatToJson(float value)
+    {
+        return value.ToString(
+            "0.###",
+            CultureInfo.InvariantCulture
+        );
+    }
+
+    private static string EscapeJson(string value)
+    {
+        if (string.IsNullOrEmpty(value))
         {
-            if (targetImage == null)
-            {
-                return;
-            }
-
-            int levelIndex = ConvertValueToLevelIndex(value);
-
-            Sprite nextSprite = mode
-                == LightingLevelSpriteMode.Brightness
-                    ? GetBrightnessSprite(levelIndex)
-                    : GetSaturationSprite(themeIndex, levelIndex);
-
-            if (nextSprite == null)
-            {
-                if (logMissingSprite)
-                {
-                    Debug.LogWarning(
-                        "[LightingLevelSpriteView] Sprite is not assigned."
-                        + " object="
-                        + gameObject.name
-                        + " mode="
-                        + mode
-                        + " themeIndex="
-                        + themeIndex
-                        + " levelIndex="
-                        + levelIndex
-                    );
-                }
-
-                // 未設定時に現在の画像を消さない。
-                return;
-            }
-
-            targetImage.sprite = nextSprite;
-            targetImage.enabled = true;
-
-            if (logAppliedSprite)
-            {
-                Debug.Log(
-                    "[LightingLevelSpriteView] Applied."
-                    + " object="
-                    + gameObject.name
-                    + " mode="
-                    + mode
-                    + " themeIndex="
-                    + themeIndex
-                    + " levelIndex="
-                    + levelIndex
-                    + " sprite="
-                    + nextSprite.name
-                );
-            }
+            return "";
         }
 
-        private int ConvertValueToLevelIndex(float value)
-        {
-            float normalizedValue = Mathf.Clamp01(value);
-
-            return Mathf.Clamp(
-                Mathf.RoundToInt(normalizedValue * MaxLevelIndex),
-                0,
-                MaxLevelIndex
-            );
-        }
-
-        private Sprite GetBrightnessSprite(int levelIndex)
-        {
-            if (brightnessLevelSprites == null)
-            {
-                return null;
-            }
-
-            if (levelIndex < 0
-                || levelIndex >= brightnessLevelSprites.Length)
-            {
-                return null;
-            }
-
-            return brightnessLevelSprites[levelIndex];
-        }
-
-        private Sprite GetSaturationSprite(
-            int themeIndex,
-            int levelIndex
-        )
-        {
-            if (saturationThemeSprites == null
-                || saturationThemeSprites.Length == 0)
-            {
-                return null;
-            }
-
-            int safeThemeIndex = Mathf.Clamp(
-                themeIndex,
-                0,
-                saturationThemeSprites.Length - 1
-            );
-
-            SaturationThemeSpriteSet themeSet =
-                saturationThemeSprites[safeThemeIndex];
-
-            if (themeSet == null
-                || themeSet.levelSprites == null)
-            {
-                return null;
-            }
-
-            if (levelIndex < 0
-                || levelIndex >= themeSet.levelSprites.Length)
-            {
-                return null;
-            }
-
-            return themeSet.levelSprites[levelIndex];
-        }
-
-        private int ResolveCurrentThemeIndex()
-        {
-            if (mode != LightingLevelSpriteMode.Saturation)
-            {
-                return 0;
-            }
-
-            if (themeButtonGroup != null
-                && themeButtonGroup.SelectedIndex >= 0)
-            {
-                return themeButtonGroup.SelectedIndex;
-            }
-
-            return fallbackThemeIndex;
-        }
-
-        private void SubscribeEvents()
-        {
-            if (stepController != null)
-            {
-                stepController.onValueChangedByStep.RemoveListener(
-                    OnStepValueChanged
-                );
-
-                stepController.onValueChangedByStep.AddListener(
-                    OnStepValueChanged
-                );
-            }
-
-            if (mode == LightingLevelSpriteMode.Saturation
-                && themeButtonGroup != null)
-            {
-                themeButtonGroup.onSelectedIndexChanged.RemoveListener(
-                    OnThemeChanged
-                );
-
-                themeButtonGroup.onSelectedIndexChanged.AddListener(
-                    OnThemeChanged
-                );
-            }
-        }
-
-        private void UnsubscribeEvents()
-        {
-            if (stepController != null)
-            {
-                stepController.onValueChangedByStep.RemoveListener(
-                    OnStepValueChanged
-                );
-            }
-
-            if (themeButtonGroup != null)
-            {
-                themeButtonGroup.onSelectedIndexChanged.RemoveListener(
-                    OnThemeChanged
-                );
-            }
-        }
-
-        private void RequestRefreshNextFrame()
-        {
-            if (!isActiveAndEnabled)
-            {
-                return;
-            }
-
-            if (refreshRoutine != null)
-            {
-                StopCoroutine(refreshRoutine);
-            }
-
-            refreshRoutine =
-                StartCoroutine(RefreshNextFrame());
-        }
-
-        private IEnumerator RefreshNextFrame()
-        {
-            yield return null;
-
-            refreshRoutine = null;
-            RefreshCurrentSprite();
-        }
-
-        private void ApplyImageSettings()
-        {
-            if (targetImage == null)
-            {
-                return;
-            }
-
-            if (disableTargetRaycast)
-            {
-                targetImage.raycastTarget = false;
-            }
-        }
-
-        private void ResolveReferences()
-        {
-            if (sliderValue == null)
-            {
-                sliderValue =
-                    GetComponent<HorizontalSliderValue>();
-            }
-
-            if (stepController == null)
-            {
-                stepController =
-                    GetComponent<HorizontalSliderStepController>();
-            }
-        }
+        return value
+            .Replace("\\", "\\\\")
+            .Replace("\"", "\\\"")
+            .Replace("\n", "\\n")
+            .Replace("\r", "\\r")
+            .Replace("\t", "\\t");
     }
 }
